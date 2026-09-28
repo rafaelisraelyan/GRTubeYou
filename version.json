@@ -1,9 +1,11 @@
 {
   "package": {
-    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.59/GRTubeYou-32.59-universal.apk",
-    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.59/GRTubeYou-32.59-arm64-v8a.apk"],
-    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.59/GRTubeYou-32.59-armeabi-v7a.apk"]
+    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.60/GRTubeYou-32.60-universal.apk",
+    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.60/GRTubeYou-32.60-arm64-v8a.apk"],
+    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.60/GRTubeYou-32.60-armeabi-v7a.apk"],
+    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.60/GRTubeYou-32.60-x86.apk"],
   },
+  "32.60": {"versionCode": 2450, "changelog": ["Вертикальное перелистывание Shorts (вверх/вниз)", "Compose-экран на Jetpack Compose"]},
   "32.59": {
     "versionCode": 2449,
     "changelog": [

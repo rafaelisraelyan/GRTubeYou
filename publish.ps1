@@ -24,14 +24,30 @@ function Write-Ok($msg) { Write-Host "    $msg" -ForegroundColor Green }
 function Fail($msg) { throw $msg }
 
 if (-not $env:GITHUB_TOKEN) {
-    # Fall back to the gh CLI so `gh auth login` is the only setup step
-    $ghToken = $null
-    try { $ghToken = (& gh auth token 2>$null | Select-Object -First 1) } catch { $ghToken = $null }
+    # Fall back to the gh CLI so `gh auth login` is the only setup step.
+    # gh is not always on PATH (it installs to Program Files), so look there too.
+    $ghExe = $null
+    $onPath = Get-Command gh -ErrorAction SilentlyContinue
+    if ($onPath) { $ghExe = $onPath.Source }
 
-    if ($ghToken -and "$ghToken".Trim()) {
-        $env:GITHUB_TOKEN = "$ghToken".Trim()
-        Write-Step "Using token from gh CLI"
-    } else {
+    if (-not $ghExe) {
+        $candidates = @(
+            "$env:ProgramFiles\GitHub CLI\gh.exe",
+            "${env:ProgramFiles(x86)}\GitHub CLI\gh.exe",
+            "$env:LOCALAPPDATA\Programs\GitHub CLI\gh.exe"
+        ) | Where-Object { Test-Path $_ }
+        $ghExe = $candidates | Select-Object -First 1
+    }
+
+    if ($ghExe) {
+        $ghToken = & $ghExe auth token 2>$null | Select-Object -First 1
+        if ($ghToken -and "$ghToken".Trim()) {
+            $env:GITHUB_TOKEN = "$ghToken".Trim()
+            Write-Step "Using token from gh CLI ($ghExe)"
+        }
+    }
+
+    if (-not $env:GITHUB_TOKEN) {
         Fail "No GitHub credentials. Run 'gh auth login' (winget install GitHub.cli) or set `$env:GITHUB_TOKEN to a PAT with 'repo' scope."
     }
 }
@@ -87,8 +103,16 @@ if (-not $SkipBuild) {
 
     Push-Location $ProjectPath
     try {
+        # NOTE: gradlew writes deprecation notices to stderr. Under
+        # $ErrorActionPreference='Stop' PowerShell 5.1 turns those into a fatal
+        # error, so relax it for the duration of the build and trust the exit code.
+        $prevPref = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
         & .\gradlew.bat assembleStstableRelease --console=plain
-        if ($LASTEXITCODE -ne 0) { Fail "Gradle build failed with exit code $LASTEXITCODE" }
+        $gradleExit = $LASTEXITCODE
+        $ErrorActionPreference = $prevPref
+
+        if ($gradleExit -ne 0) { Fail "Gradle build failed with exit code $gradleExit" }
     } finally {
         Pop-Location
     }
@@ -107,7 +131,6 @@ foreach ($apk in $apks) {
     Write-Ok "$abi -> $($apk.Name)"
 }
 if (-not $byAbi.ContainsKey('universal')) { Fail "universal APK is missing" }
-
 # ---------------------------------------------------- 5. GitHub release
 $tag = "v$VersionName"
 $releaseBody = if ($ChangeLog.Count) { ($ChangeLog | ForEach-Object { "- $_" }) -join "`n" } else { "GRTubeYou $VersionName" }
@@ -127,18 +150,61 @@ try {
         draft            = $false
         prerelease       = $false
     } | ConvertTo-Json
-    $release = Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases" -Headers $headers -Method Post -Body $payload -ContentType 'application/json'
+    # NOTE: PowerShell 5.1 sends a string body as ASCII, which turns any non-Latin
+    # text in the release notes into "?". Send UTF-8 bytes instead.
+    $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+    $release = Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases" -Headers $headers -Method Post -Body $payloadBytes -ContentType 'application/json; charset=utf-8'
     Write-Ok "created release $tag (id $($release.id))"
 }
 
 # ------------------------------------------------------------ 6. upload APK
 Write-Step "Uploading APK assets"
-$uploaded = @{}
 
-foreach ($apk in $apks) {
-    $assetName = "GRTubeYou-$VersionName-$($apk.BaseName -replace '^SmartTube_stable_', '').apk"
-    $uploaded[$assetName] = "https://github.com/$Owner/$Repo/releases/download/$tag/$assetName"
-    Write-Ok "$assetName ($([math]::Round($apk.Length / 1MB, 1)) MB)"
+# NOTE: the asset name and the downloadUrlList_<abi> key are both derived from the
+# detected ABI. Do not rebuild them from the Gradle file name - that produced names
+# like GRTubeYou-32.60-32.60_arm64-v8a.apk and manifest keys like
+# downloadUrlList_32.60_arm64-v8a, which the app does not recognise.
+$assets = @{}
+
+foreach ($abi in $byAbi.Keys) {
+    $apk = $byAbi[$abi]
+    $assetName = "GRTubeYou-$VersionName-$abi.apk"
+    # Re-runs would fail with "already_exists", so drop the previous copy first.
+    $currentAssets = Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/$($release.id)/assets" -Headers $headers -Method Get
+    foreach ($ex in @($currentAssets)) {
+        if ($ex -ne $null -and $ex.name -eq $assetName) {
+            Write-Ok "replacing existing asset $assetName"
+            Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/assets/$($ex.id)" -Headers $headers -Method Delete | Out-Null
+        }
+    }
+
+    # NOTE: assets are uploaded to uploads.github.com, NOT api.github.com - posting
+    # to the api host returns 404. The release object carries the correct host in
+    # upload_url as "https://uploads.github.com/.../assets{?name,label}".
+    $uploadBase = $release.upload_url -replace '\{.*$', ''
+    $uploadUri = "$uploadBase`?name=$([uri]::EscapeDataString($assetName))"
+
+    # NOTE: curl is used because Invoke-RestMethod -InFile streams the body with
+    # Transfer-Encoding: chunked, which the uploads endpoint does not accept.
+    $tmpOut = [System.IO.Path]::GetTempFileName()
+    $httpCode = & curl.exe -s -o $tmpOut -w '%{http_code}' -X POST `
+        -H "Authorization: token $env:GITHUB_TOKEN" `
+        -H "Content-Type: application/octet-stream" `
+        --data-binary "@$($apk.FullName)" `
+        --max-time 900 `
+        $uploadUri
+    $respBody = if (Test-Path $tmpOut) { [System.IO.File]::ReadAllText($tmpOut) } else { '' }
+    Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue
+
+    if ($httpCode -ne '201' -and $httpCode -ne '200') {
+        Fail "Upload of $assetName failed with HTTP $httpCode : $respBody"
+    }
+
+    $assets[$abi] = @{
+        Name = $assetName
+        Url  = "https://github.com/$Owner/$Repo/releases/download/$tag/$assetName"
+    }
+    Write-Ok "uploaded $assetName ($([math]::Round($apk.Length / 1MB, 1)) MB)"
 }
 
 # ------------------------------------------------- 7. rewrite version.json
@@ -163,11 +229,11 @@ foreach ($m in [regex]::Matches($oldManifest, '"(?<v>\d+[\.\d]*)"\s*:\s*\{(?<bod
 $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine('{')
 [void]$sb.AppendLine('  "package": {')
-[void]$sb.AppendLine("    `"downloadUrl`": `"$($uploaded[($uploaded.Keys | Where-Object { $_ -like '*universal*' } | Select-Object -First 1)])`",")
-foreach ($kv in $uploaded.GetEnumerator()) {
-    $suffix = $kv.Key -replace '^GRTubeYou-[^-]+-', '' -replace '\.apk$', ''
-    if ($suffix -eq 'universal') { continue }
-    [void]$sb.AppendLine("    `"downloadUrlList_$suffix`": [`"$($kv.Value)`"],")
+[void]$sb.AppendLine("    `"downloadUrl`": `"$($assets['universal'].Url)`",")
+
+foreach ($abi in ($assets.Keys | Sort-Object)) {
+    if ($abi -eq 'universal') { continue }
+    [void]$sb.AppendLine("    `"downloadUrlList_$abi`": [`"$($assets[$abi].Url)`"],")
 }
 $lastLine = $sb.Length - 1
 while ($lastLine -ge 0 -and [char]::IsWhiteSpace($sb[$lastLine])) { $lastLine-- }
