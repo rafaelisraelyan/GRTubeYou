@@ -29,6 +29,7 @@ Set-StrictMode -Version 2.0
 
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg) { Write-Host "    $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "    !! $msg" -ForegroundColor Yellow }
 function Fail($msg) { throw $msg }
 
 if (-not $env:GITHUB_TOKEN) {
@@ -84,10 +85,13 @@ Write-Ok "current: $oldName (code $oldCode)"
 
 if ($VersionCode -le 0) { $VersionCode = $oldCode + 1 }
 
+$explicitVersion = [bool]$VersionName
+$oldBaseName = $oldName -replace '[- ]beta\.?\d+$', ''
+
 if (-not $VersionName) {
     # Strip a beta suffix first, otherwise the next stable build would be named
     # "32.65-beta.1.2456". Handles both the old "-beta.1" and the current " beta1".
-    $baseName = $oldName -replace '[- ]beta\.?\d+$', ''
+    $baseName = $oldBaseName
     $parts = $baseName -split '\.'
     if ($parts.Count -eq 2 -and $parts[1] -match '^\d+$') {
         $VersionName = "$($parts[0]).$([int]$parts[1] + 1)"
@@ -101,7 +105,21 @@ Write-Ok "publishing: $VersionName (code $VersionCode)"
 $isPrerelease = [bool]$Beta
 
 if ($Beta) {
-    if ($BetaNumber -le 0) { $BetaNumber = 1 }
+    if ($BetaNumber -le 0) {
+        # Continue the existing beta counter instead of silently restarting at 1.
+        # Defaulting to 1 reused the tag "v32.65-beta1" and overwrote the APKs of the
+        # previous beta1 in place, which is impossible to undo - the versionName is
+        # baked into the APK. The counter only continues when the base version is
+        # unchanged (e.g. 32.65 beta1 -> 32.65 beta2); a new base starts over at 1.
+        $oldBeta = [regex]::Match($oldName, '[- ]beta\.?(\d+)$')
+        if (-not $explicitVersion -or $VersionName -ne $oldBaseName) {
+            $BetaNumber = 1
+        } elseif ($oldBeta.Success) {
+            $BetaNumber = [int]$oldBeta.Groups[1].Value + 1
+        } else {
+            $BetaNumber = 1
+        }
+    }
 
     # The marker goes into versionName too, so "About" shows that this build is beta.
     # NOTE: the space is only for display. GitHub refs and asset names cannot contain
@@ -172,7 +190,10 @@ Write-Step "Creating GitHub release $tag"
 $release = $null
 try {
     $existing = Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/tags/$tag" -Headers $headers -Method Get
-    Write-Ok "release $tag already exists (id $($existing.id)) - reusing"
+    # This path silently replaced the APKs of an already published release. That is
+    # only ever correct when re-running the exact same publish, so say so loudly.
+    Write-Warn "release $tag already exists (id $($existing.id), published $($existing.published_at))"
+    Write-Warn "its assets are about to be OVERWRITTEN - a different versionCode under the same tag cannot be undone"
     $release = $existing
 } catch {
     $payload = @{
@@ -253,8 +274,14 @@ $oldManifest = if (Test-Path $manifestPath) { [System.IO.File]::ReadAllText($man
 function Esc($s) { $s -replace '\\', '\\\\' -replace '"', '\"' }
 
 # keep every published version that is older than the new one
+# NOTE: the key pattern must accept any quoted string, not just digits and dots.
+# "\d+[\.\d]*" silently dropped every beta entry, because the keys look like
+# "32.65 beta1" (and used to be "32.65-beta.1") - so no beta build ever survived
+# into the next manifest and the changelog history kept resetting. The "package"
+# member matches this pattern too, but it carries no versionCode, so the check
+# below skips it.
 $kept = New-Object System.Collections.Generic.List[string]
-foreach ($m in [regex]::Matches($oldManifest, '"(?<v>\d+[\.\d]*)"\s*:\s*\{(?<body>[^{}]*(?:\{[^{}]*\}[^{}]*)*)\}')) {
+foreach ($m in [regex]::Matches($oldManifest, '"(?<v>[^"]+)"\s*:\s*\{(?<body>[^{}]*(?:\{[^{}]*\}[^{}]*)*)\}')) {
     $vn = $m.Groups['v'].Value
     $body = $m.Groups['body'].Value
     $cm = [regex]::Match($body, '"versionCode"\s*:\s*(\d+)')
@@ -300,7 +327,9 @@ Write-Ok $manifestPath
 Write-Host ''
 Write-Step "Done"
 Write-Host "  Release:  https://github.com/$Owner/$Repo/releases/tag/$tag"
-Write-Host "  Manifest: https://raw.githubusercontent.com/$Owner/$Repo/main/version.json"
-Write-Host "  Next:     commit and push version.json in $DistPath"
+# The manifest name depends on the channel - printing version.json during a beta
+# publish sent me looking at the wrong file.
+Write-Host "  Manifest: https://raw.githubusercontent.com/$Owner/$Repo/main/$manifestName"
+Write-Host "  Next:     commit and push $manifestName in $DistPath"
 Write-Host ''
-Write-Host "  The app only sees a new version once version.json is on the default branch." -ForegroundColor Yellow
+Write-Host "  The app only sees a new version once $manifestName is on the default branch." -ForegroundColor Yellow
