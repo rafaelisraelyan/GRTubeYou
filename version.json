@@ -1,0 +1,15 @@
+{
+  "package": {
+    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.59/GRTubeYou-32.59-universal.apk",
+    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.59/GRTubeYou-32.59-arm64-v8a.apk"],
+    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.59/GRTubeYou-32.59-armeabi-v7a.apk"]
+  },
+  "32.59": {
+    "versionCode": 2449,
+    "changelog": [
+      "Переименовано в GRTubeYou",
+      "Новый пакет com.gr.grtubeyou, ставится рядом со SmartTube",
+      "Убран Firebase Crashlytics"
+    ]
+  }
+}
