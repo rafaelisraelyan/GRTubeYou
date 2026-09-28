@@ -85,11 +85,14 @@ Write-Ok "current: $oldName (code $oldCode)"
 if ($VersionCode -le 0) { $VersionCode = $oldCode + 1 }
 
 if (-not $VersionName) {
-    $parts = $oldName -split '\.'
+    # Strip a beta suffix first, otherwise the next stable build would be named
+    # "32.65-beta.1.2456".
+    $baseName = $oldName -replace '-beta\.\d+$', ''
+    $parts = $baseName -split '\.'
     if ($parts.Count -eq 2 -and $parts[1] -match '^\d+$') {
         $VersionName = "$($parts[0]).$([int]$parts[1] + 1)"
     } else {
-        $VersionName = $oldName + '.' + $VersionCode
+        $VersionName = $baseName + '.' + $VersionCode
     }
 }
 Write-Ok "publishing: $VersionName (code $VersionCode)"
