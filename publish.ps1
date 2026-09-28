@@ -13,7 +13,15 @@ param(
 
     [string] $DistPath = $PSScriptRoot,
 
-    [switch] $SkipBuild
+    [switch] $SkipBuild,
+
+    # GRTubeYou: publish to the beta channel instead of stable.
+    # Creates a GitHub *prerelease* tagged v<version>-beta.<n> and writes
+    # version-beta.json, which is the manifest the app reads when the
+    # "GRTubeYou Beta" switch is on.
+    [switch] $Beta,
+
+    [int] $BetaNumber = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,6 +94,20 @@ if (-not $VersionName) {
 }
 Write-Ok "publishing: $VersionName (code $VersionCode)"
 
+# ------------------------------------------------- 1b. beta channel handling
+$isPrerelease = [bool]$Beta
+
+if ($Beta) {
+    if ($BetaNumber -le 0) { $BetaNumber = 1 }
+
+    # The marker goes into versionName too, so "About" shows that this build is beta.
+    $VersionName = "$VersionName-beta.$BetaNumber"
+    Write-Ok "beta build, release will be a GitHub prerelease"
+}
+
+# Stable build wrote $VersionName before the beta suffix, so re-apply it to the
+# gradle file (section 2 runs after this).
+
 # --------------------------------------------- 2. write version into gradle
 Write-Step "Updating versionCode/versionName in build.gradle"
 $gradleText = [regex]::Replace($gradleText, 'versionCode\s+\d+', "versionCode $VersionCode")
@@ -148,7 +170,7 @@ try {
         name             = "GRTubeYou $VersionName"
         body             = $releaseBody
         draft            = $false
-        prerelease       = $false
+        prerelease       = $isPrerelease
     } | ConvertTo-Json
     # NOTE: PowerShell 5.1 sends a string body as ASCII, which turns any non-Latin
     # text in the release notes into "?". Send UTF-8 bytes instead.
@@ -210,7 +232,10 @@ foreach ($abi in $byAbi.Keys) {
 # ------------------------------------------------- 7. rewrite version.json
 Write-Step "Writing version.json"
 
-$manifestPath = Join-Path $DistPath 'version.json'
+# GRTubeYou: stable goes to version.json, beta to version-beta.json. The app picks
+# the file based on the "GRTubeYou Beta" switch in the About screen.
+$manifestName = if ($Beta) { 'version-beta.json' } else { 'version.json' }
+$manifestPath = Join-Path $DistPath $manifestName
 $oldManifest = if (Test-Path $manifestPath) { [System.IO.File]::ReadAllText($manifestPath) } else { '' }
 
 function Esc($s) { $s -replace '\\', '\\\\' -replace '"', '\"' }
