@@ -226,19 +226,22 @@ foreach ($m in [regex]::Matches($oldManifest, '"(?<v>\d+[\.\d]*)"\s*:\s*\{(?<bod
     }
 }
 
-$sb = New-Object System.Text.StringBuilder
-[void]$sb.AppendLine('{')
-[void]$sb.AppendLine('  "package": {')
-[void]$sb.AppendLine("    `"downloadUrl`": `"$($assets['universal'].Url)`",")
+# NOTE: build the member lines first and join with ',' - never append the comma
+# while writing each line. A trailing comma before '}' makes the whole manifest
+# invalid JSON and the app then shows "Expected literal value at character N".
+# Single-quoted literals keep the double quotes readable without escaping.
+$packageLines = @()
+$packageLines += '    "downloadUrl": "' + $assets['universal'].Url + '"'
 
 foreach ($abi in ($assets.Keys | Sort-Object)) {
     if ($abi -eq 'universal') { continue }
-    [void]$sb.AppendLine("    `"downloadUrlList_$abi`": [`"$($assets[$abi].Url)`"],")
+    $packageLines += '    "downloadUrlList_' + $abi + '": ["' + $assets[$abi].Url + '"]'
 }
-$lastLine = $sb.Length - 1
-while ($lastLine -ge 0 -and [char]::IsWhiteSpace($sb[$lastLine])) { $lastLine-- }
-[void]$sb.Remove($lastLine + 1, $sb.Length - $lastLine - 1)
-[void]$sb.AppendLine()
+
+$sb = New-Object System.Text.StringBuilder
+[void]$sb.AppendLine('{')
+[void]$sb.AppendLine('  "package": {')
+[void]$sb.AppendLine(($packageLines -join ",`n"))
 [void]$sb.AppendLine('  },')
 
 $entries = New-Object System.Collections.Generic.List[string]
@@ -249,7 +252,10 @@ foreach ($k in $kept) { $entries.Add($k) }
 [void]$sb.AppendLine(($entries -join ",`n"))
 [void]$sb.AppendLine('}')
 
+# Refuse to publish a manifest the app would fail to parse.
 $manifest = $sb.ToString()
+try { $null = $manifest | ConvertFrom-Json } catch { Fail "Generated version.json is not valid JSON: $($_.Exception.Message)" }
+
 [System.IO.File]::WriteAllText($manifestPath, $manifest)
 Write-Ok $manifestPath
 
