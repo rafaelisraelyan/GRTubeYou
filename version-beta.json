@@ -1,10 +1,11 @@
 {
   "package": {
-    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta2/GRTubeYou-32.65-beta2-universal.apk",
-    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta2/GRTubeYou-32.65-beta2-arm64-v8a.apk"],
-    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta2/GRTubeYou-32.65-beta2-armeabi-v7a.apk"],
-    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta2/GRTubeYou-32.65-beta2-x86.apk"]
+    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta3/GRTubeYou-32.65-beta3-universal.apk",
+    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta3/GRTubeYou-32.65-beta3-arm64-v8a.apk"],
+    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta3/GRTubeYou-32.65-beta3-armeabi-v7a.apk"],
+    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta3/GRTubeYou-32.65-beta3-x86.apk"]
   },
+  "32.65 beta3": {"versionCode": 2459, "changelog": ["Боковое меню: одинаковые отступы слева и справа у выделенного пункта", "Иконки пунктов обрезаны по рисунку и стали одного размера", "Убран масштаб при выделении - он сдвигал подложку"]},
   "32.65 beta2": {"versionCode": 2458, "changelog": ["Пункт бокового меню при выделении больше не обрезает название", "Убрана системная рамка фокуса у пунктов бокового меню"]},
   "32.65 beta1": {"versionCode": 2457, "changelog": ["Пункт бокового меню при выделении больше не обрезает название", "Убрана системная рамка фокуса у пунктов бокового меню", "Подложка активного пункта меню: овал без обрезки", "Порядок пунктов в О приложении", "Поиск обновлений больше не застревает на старом манифесте", "Убрана системная рамка фокуса вокруг кругов поиска и профиля"]},
   "32.64": {"versionCode": 2454, "changelog": ["Бета-канал обновлений: тумблер GRTubeYou Beta в настройках", "Боковая панель: овальная подложка, блок ужат"]},
