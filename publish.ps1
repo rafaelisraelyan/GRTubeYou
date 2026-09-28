@@ -86,8 +86,8 @@ if ($VersionCode -le 0) { $VersionCode = $oldCode + 1 }
 
 if (-not $VersionName) {
     # Strip a beta suffix first, otherwise the next stable build would be named
-    # "32.65-beta.1.2456".
-    $baseName = $oldName -replace '-beta\.\d+$', ''
+    # "32.65-beta.1.2456". Handles both the old "-beta.1" and the current " beta1".
+    $baseName = $oldName -replace '[- ]beta\.?\d+$', ''
     $parts = $baseName -split '\.'
     if ($parts.Count -eq 2 -and $parts[1] -match '^\d+$') {
         $VersionName = "$($parts[0]).$([int]$parts[1] + 1)"
@@ -104,9 +104,15 @@ if ($Beta) {
     if ($BetaNumber -le 0) { $BetaNumber = 1 }
 
     # The marker goes into versionName too, so "About" shows that this build is beta.
-    $VersionName = "$VersionName-beta.$BetaNumber"
+    # NOTE: the space is only for display. GitHub refs and asset names cannot contain
+    # spaces (they get rewritten to dots, which would break the download URLs), so
+    # $safeVersion below is what ends up in the tag and in the file names.
+    $VersionName = "$VersionName beta$BetaNumber"
     Write-Ok "beta build, release will be a GitHub prerelease"
 }
+
+# URL/CLI safe form of the version, e.g. "32.65 beta1" -> "32.65-beta1"
+$safeVersion = $VersionName -replace '\s+', '-'
 
 # Stable build wrote $VersionName before the beta suffix, so re-apply it to the
 # gradle file (section 2 runs after this).
@@ -157,7 +163,8 @@ foreach ($apk in $apks) {
 }
 if (-not $byAbi.ContainsKey('universal')) { Fail "universal APK is missing" }
 # ---------------------------------------------------- 5. GitHub release
-$tag = "v$VersionName"
+# The tag uses $safeVersion (no spaces); the human readable title uses $VersionName.
+$tag = "v$safeVersion"
 $releaseBody = if ($ChangeLog.Count) { ($ChangeLog | ForEach-Object { "- $_" }) -join "`n" } else { "GRTubeYou $VersionName" }
 
 Write-Step "Creating GitHub release $tag"
@@ -193,7 +200,9 @@ $assets = @{}
 
 foreach ($abi in $byAbi.Keys) {
     $apk = $byAbi[$abi]
-    $assetName = "GRTubeYou-$VersionName-$abi.apk"
+    # NOTE: $safeVersion, not $VersionName - a space in an asset name is rewritten
+    # to a dot by GitHub and the manifest links would 404.
+    $assetName = "GRTubeYou-$safeVersion-$abi.apk"
     # Re-runs would fail with "already_exists", so drop the previous copy first.
     $currentAssets = Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/$($release.id)/assets" -Headers $headers -Method Get
     foreach ($ex in @($currentAssets)) {
