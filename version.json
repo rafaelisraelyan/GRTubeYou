@@ -1,10 +1,11 @@
 {
   "package": {
-    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.64/GRTubeYou-32.64-universal.apk",
-    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.64/GRTubeYou-32.64-arm64-v8a.apk"],
-    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.64/GRTubeYou-32.64-armeabi-v7a.apk"],
-    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.64/GRTubeYou-32.64-x86.apk"]
+    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65/GRTubeYou-32.65-universal.apk",
+    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65/GRTubeYou-32.65-arm64-v8a.apk"],
+    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65/GRTubeYou-32.65-armeabi-v7a.apk"],
+    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65/GRTubeYou-32.65-x86.apk"]
   },
+  "32.65": {"versionCode": 2460, "changelog": ["Боковая панель: овальная подложка с симметричными отступами", "Иконки пунктов меню обрезаны по рисунку и стали одного размера", "Убрана системная рамка фокуса вокруг кругов и пунктов меню", "Порядок пунктов в О приложении", "Поиск обновлений больше не застревает на старом манифесте"]},
   "32.64": {"versionCode": 2454, "changelog": ["Бета-канал обновлений: тумблер GRTubeYou Beta в настройках", "Боковая панель: овальная подложка, блок ужат"]},
   "32.63": {"versionCode": 2453, "changelog": ["Боковая панель: скруглённая подложка с равными отступами, выделенный пункт крупнее"]},
   "32.62": {"versionCode": 2452, "changelog": ["Нет ряда рекомендаций при просмотре Shorts", "Боковая панель: только иконки, название у пункта в фокусе"]},
