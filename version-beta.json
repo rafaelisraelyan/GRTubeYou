@@ -1,10 +1,11 @@
 {
   "package": {
-    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta12/GRTubeYou-32.65-beta12-universal.apk",
-    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta12/GRTubeYou-32.65-beta12-arm64-v8a.apk"],
-    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta12/GRTubeYou-32.65-beta12-armeabi-v7a.apk"],
-    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta12/GRTubeYou-32.65-beta12-x86.apk"]
+    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta13/GRTubeYou-32.65-beta13-universal.apk",
+    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta13/GRTubeYou-32.65-beta13-arm64-v8a.apk"],
+    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta13/GRTubeYou-32.65-beta13-armeabi-v7a.apk"],
+    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.65-beta13/GRTubeYou-32.65-beta13-x86.apk"]
   },
+  "32.65 beta13": {"versionCode": 2470, "changelog": ["Панель обновления: кнопка Установить наконец наводится пультом"]},
   "32.65 beta12": {"versionCode": 2469, "changelog": ["Пункты меню шестерёнки работают: скорость, субтитры, повтор, описание, затемнение, поиск, настройки воспроизведения, картинка в картинке, чат, очередь, прочее"]},
   "32.65 beta11": {"versionCode": 2468, "changelog": ["Панель обновления: кнопка Установить появляется даже если панель не удалось перестроить"]},
   "32.65 beta10": {"versionCode": 2467, "changelog": ["Новая плитка настроек VPN / Прокси: SOCKS5 или HTTP, логин и пароль, проверка подключения", "Трафик приложения (видео и запросы к YouTube) можно пускать через прокси", "Тумблер автозагрузки модели голосового поиска (44 МБ) - Настройки - Поиск"]},
