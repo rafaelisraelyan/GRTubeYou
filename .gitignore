@@ -1,0 +1,5 @@
+# The Vosk model archive is a third-party 44 MB binary. It is published to
+# GitHub Releases by publish-model.ps1 and only voice-model.json (a few hundred
+# bytes) belongs in git. Committing the zip would double the repository size on
+# every model update and git has no use for a file that never changes.
+model/

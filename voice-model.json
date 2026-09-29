@@ -1,0 +1,13 @@
+{
+    "_comment":  "GRTubeYou offline speech model. Kept separate from version.json so the model can be replaced without releasing a new build of the app. Read by VoskModelStore.",
+    "model":  {
+                  "version":  "0.22",
+                  "dirName":  "vosk-model-small-ru-0.22",
+                  "language":  "ru",
+                  "url":  "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/voice-ru-0.22/vosk-model-small-ru-0.22.zip",
+                  "sha256":  "961d5ff98a17f4aa6de69864d0aa71fa5bac682301d2b5d17a3f24c5c99a46d4",
+                  "sizeBytes":  46236750,
+                  "source":  "https://alphacephei.com/vosk/models",
+                  "license":  "Apache-2.0"
+              }
+}
