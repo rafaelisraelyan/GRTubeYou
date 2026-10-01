@@ -1,0 +1,20 @@
+name = "grtubeyou-bug-reports"
+main = "bug-report-worker.js"
+compatibility_date = "2026-09-30"
+
+# GRTubeYou bug report receiver.
+#
+# Nothing here is a secret - all three values are set with `wrangler secret put`, which
+# keeps them out of this file and out of the deployed source. The deployment is free on
+# Cloudflare's Workers free plan, which is enough for a channel this size.
+#
+#   wrangler secret put TELEGRAM_TOKEN    # from @BotFather
+#   wrangler secret put TELEGRAM_CHAT_ID  # chat id from getUpdates; the bot must have been
+#                                        # messaged once or Telegram answers 403
+#   wrangler secret put REPORT_PATH       # ~32 random characters, becomes the URL path
+#
+# After deploying, put the full URL into BugReportSender.ENDPOINT in the app and rebuild.
+# Rotating a leaked path is then one `wrangler secret put REPORT_PATH` and a rebuild.
+
+[observability]
+enabled = true
