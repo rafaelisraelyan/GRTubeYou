@@ -3,3 +3,7 @@
 # bytes) belongs in git. Committing the zip would double the repository size on
 # every model update and git has no use for a file that never changes.
 model/
+
+# wrangler's local cache: account metadata and build artefacts, machine-specific and not
+# part of the receiver. The worker source and wrangler.toml are tracked; this is not.
+.wrangler/
