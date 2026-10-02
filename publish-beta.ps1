@@ -32,21 +32,23 @@ $ErrorActionPreference = 'Stop'
 # generated form is a safety net and not the normal path. It is deliberately not attempted
 # here rather than half-translated.
 
-# GRTubeYou 02.10.2026: rewritten. This batch is the player's visual direction only - the
-# previous list described the beta before it (voice input, bug reports, the quality button,
-# moving the vote counts onto their buttons) and those notes shipped in beta4. A release note
-# that repeats the last one tells a viewer nothing about what changed since.
+# GRTubeYou 02.10.2026, beta6: rewritten AGAIN, and this time about the crash.
 #
-# What is deliberately absent: the date format is still YouTube's own localized text and the
-# spacing beside the count-bearing like and dislike buttons is still slightly tighter than
-# between the others. Neither is fixed, so neither is claimed.
+# beta5 could not open a video at all - it crashed the instant anyone pressed one. That is
+# stated in the first line below rather than left out, because a viewer who updated to beta5
+# needs to know it was a fault and not something they did. The visual changes from beta5 were
+# themselves fine and are still in this build; only the fault is new to say.
+#
+# Still absent, still not fixed: the date format remains YouTube's own, and the spacing beside
+# the count-bearing vote buttons is still slightly tighter than between the others.
 $changelog = @(
+    'Исправлено: приложение падало при нажатии на видео - beta5 была сломана, и это была наша ошибка',
+    'Причина: цвет таймлайна был задан числом вместо ссылки на цвет, и плеер не мог его прочитать',
     'Плеер: затемнение поверх видео стало одним мягким градиентом, а не двумя тёмными полосами',
     'Плеер: заголовок стал заметно компактнее и больше не занимает пол-экрана',
     'Плеер: нижняя панель легче - аватар канала уменьшен, отступы сокращены',
     'Плеер: линия таймлайна тоньше, полоса просмотренного белая, а не красная',
-    'Плеер: строка метаданных короче - убрана надпись Дата публикации',
-    'Плеер: размеры и отступы унифицированы, кнопки выровнены по одной линии'
+    'Плеер: строка метаданных короче - убрана надпись Дата публикации'
 )
 
 if ($changelog.Count -eq 0) {
