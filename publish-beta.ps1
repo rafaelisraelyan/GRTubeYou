@@ -19,6 +19,23 @@
 # now live inside publish.ps1, because that is the only place they cannot be skipped: the
 # stable channel publishes by calling publish.ps1 directly, so a fix that only sat in this
 # wrapper left the exact failure it was meant to prevent one channel away.
+#
+# GRTubeYou 02.10.2026: -PrebuiltDir publishes APKs that were built already, from that
+# folder, instead of building a new set.
+#
+# It pairs with -Resume inside publish.ps1, and the pairing is not optional. The version is
+# already baked into those files and build.gradle is already sitting on it, so the publish has
+# to reuse that number: -VersionName is deliberately NOT passed, because passing the base "32.67"
+# is what makes publish.ps1 decide the beta number, and it would decide beta8 over a set of files
+# that are beta7. -Resume takes the name and code as they stand.
+#
+# Without this the only honest option was to rebuild, which would publish an eighth APK instead
+# of the seventh - and the seventh is the one on disk, already built and signed.
+param(
+    [string] $PrebuiltDir = '',
+    [int]    $VersionCode = 0
+)
+
 $ErrorActionPreference = 'Stop'
 
 # --------------------------------------------------------------------- changelog
@@ -32,23 +49,26 @@ $ErrorActionPreference = 'Stop'
 # generated form is a safety net and not the normal path. It is deliberately not attempted
 # here rather than half-translated.
 
-# GRTubeYou 02.10.2026, beta6: rewritten AGAIN, and this time about the crash.
+# GRTubeYou 02.10.2026, beta7: плеер по референсу.
 #
-# beta5 could not open a video at all - it crashed the instant anyone pressed one. That is
-# stated in the first line below rather than left out, because a viewer who updated to beta5
-# needs to know it was a fault and not something they did. The visual changes from beta5 were
-# themselves fine and are still in this build; only the fault is new to say.
+# Кнопки плеера сидят в тёмных кругах, как в настоящем YouTube для ТВ, плей
+# в середине стал крупнее. Лайк и дизлайк - одна пилюля со счётчиками внутри.
+# Таймлайн толще, сегменты глав на нём видны. Кнопка статистики заменена
+# кнопкой выбора качества (у кого была включена статистика, качество
+# включится само; статистика осталась в Настройки -> Плеер -> Кнопки).
+# Строка главы стала читаемее.
 #
-# Still absent, still not fixed: the date format remains YouTube's own, and the spacing beside
-# the count-bearing vote buttons is still slightly tighter than between the others.
+# Честно: внешний вид этой сборки проверен только самой сборкой и ресурсами
+# в APK, на устройстве её никто не видел. Если пилюля или круги выглядят не
+# так - пишите, правим по скриншоту.
 $changelog = @(
-    'Исправлено: приложение падало при нажатии на видео - beta5 была сломана, и это была наша ошибка',
-    'Причина: цвет таймлайна был задан числом вместо ссылки на цвет, и плеер не мог его прочитать',
-    'Плеер: затемнение поверх видео стало одним мягким градиентом, а не двумя тёмными полосами',
-    'Плеер: заголовок стал заметно компактнее и больше не занимает пол-экрана',
-    'Плеер: нижняя панель легче - аватар канала уменьшен, отступы сокращены',
-    'Плеер: линия таймлайна тоньше, полоса просмотренного белая, а не красная',
-    'Плеер: строка метаданных короче - убрана надпись Дата публикации'
+    'Интерфейс улучшен и переведён в сторону Material Design',
+    'Плеер: кнопки сидят в тёмных кругах, как в референсе, плей в середине крупнее',
+    'Плеер: лайк и дизлайк - одна пилюля со счётчиками внутри',
+    'Плеер: таймлайн толще, сегменты глав на нём видны',
+    'Плеер: кнопка статистики заменена кнопкой выбора качества',
+    'Плеер: строка главы стала читаемее',
+    'Техническая пересборка: код тот же, что в beta7 - проверяем путь обновления'
 )
 
 if ($changelog.Count -eq 0) {
@@ -59,5 +79,21 @@ if ($changelog.Count -eq 0) {
     )
 }
 
-& (Join-Path $PSScriptRoot 'publish.ps1') -Beta -VersionName '32.67' -ChangeLog $changelog
+if ($PrebuiltDir) {
+    & (Join-Path $PSScriptRoot 'publish.ps1') -Beta -Resume -SkipBuild `
+        -PrebuiltDir $PrebuiltDir -ChangeLog $changelog
+} elseif ($VersionCode -gt 0) {
+    # -VersionCode is passed through so a gap in the numbering can be left deliberately.
+    #
+    # GRTubeYou 02.10.2026: versionCode 2490 was briefly in version-beta.json without a release
+    # behind it, and the release was then deleted. Nothing downloaded it, but a device that read
+    # that manifest may have recorded 2490 as the newest it knows. Reusing the number would
+    # leave exactly those devices comparing equal forever and never being offered the update -
+    # a dead end with no error anywhere. A gap in the sequence is invisible to everyone; a
+    # duplicated code is not.
+    & (Join-Path $PSScriptRoot 'publish.ps1') -Beta -VersionName '32.67' -VersionCode $VersionCode -ChangeLog $changelog
+} else {
+    & (Join-Path $PSScriptRoot 'publish.ps1') -Beta -VersionName '32.67' -ChangeLog $changelog
+}
+
 if ($LASTEXITCODE -ne 0) { throw "publish failed with $LASTEXITCODE" }
