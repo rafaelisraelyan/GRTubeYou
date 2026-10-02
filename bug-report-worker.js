@@ -37,10 +37,27 @@
  * the deployed source either. ENDPOINT in the app is the full URL including the path.
  */
 
-const MAX_BODY_BYTES = 512 * 1024;   // Telegram rejects longer messages outright
+/**
+ * Largest request body accepted.
+ *
+ * Must stay above what the app can actually send. The app caps its log at 600k characters,
+ * which is up to ~1.8 MB once JSON-escaped and written as UTF-8 - so the original 512 KB
+ * limit here would have rejected every large report as "too large" while the app happily
+ * built it. 16 MB leaves headroom without being a way to post arbitrary bulk at Telegram.
+ */
+const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const CHUNK = 3500;                  // under Telegram's 4096 limit, with slack
 const RATE_LIMIT = 5;                // reports per IP per window
 const RATE_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Largest log sent as a file, in JS characters.
+ *
+ * Well under the Bot API's 50 MB document limit on purpose: past this the fallback is plain
+ * text messages again, and a log that long is unreadable in a chat either way, so the honest
+ * outcome is the chunked one. The app sends a few hundred KB.
+ */
+const MAX_DOCUMENT_CHARS = 8 * 1024 * 1024;
 
 /**
  * Rate-limit state, kept in module scope rather than hung off `env`.
@@ -89,8 +106,8 @@ export default {
       return new Response('Malformed report', { status: 400 });
     }
 
-    const text = buildMessage(body);
-    if (!text) {
+    const report = buildReport(body);
+    if (!report) {
       // A report with neither a description nor a log carries nothing to act on, so it is
       // rejected here rather than forwarded as an empty message that looks like a bug in
       // the receiver.
@@ -106,7 +123,7 @@ export default {
       return new Response('Too many reports from this address', { status: 429 });
     }
 
-    const sent = await sendToTelegram(text, env);
+    const sent = await sendToTelegram(report, env);
     if (!sent) {
       return new Response('Forwarding failed', { status: 502 });
     }
@@ -116,39 +133,53 @@ export default {
 };
 
 /**
- * Assembles the human-readable report.
+ * Splits the report into a short summary and a log.
  *
- * Field names are fixed here rather than trusted from the body, so a report cannot
- * inject extra headings by sending a field nobody declared.
+ * They are handled differently because they want opposite things: the summary is three lines
+ * and is read in the chat, the log is tens of thousands of lines and is searched in an
+ * editor. Sending both as one text message meant a real report arrived as eighteen chat
+ * bubbles - unreadable, and impossible to search for the one line that matters.
+ *
+ * Field names are fixed here rather than trusted from the body, so a report cannot inject
+ * extra headings by sending a field nobody declared.
  */
-function buildMessage(body) {
+function buildReport(body) {
   const head = body.head || '';
   const description = (body.description || '').trim();
   const log = body.log || '';
 
   if (!description && !log.trim()) {
-    return '';
+    return null;
   }
 
-  let text = 'GRTubeYou bug report\n';
-  text += '=================\n';
+  let summary = 'GRTubeYou bug report\n';
+  summary += '=================\n';
 
   if (description) {
-    text += '\nWhat the user wrote:\n' + description + '\n';
+    summary += '\nWhat the user wrote:\n' + description + '\n';
   }
 
   if (head) {
-    text += '\n' + head + '\n';
+    summary += '\n' + head + '\n';
   }
 
   if (log.trim()) {
-    text += '\n----- log -----\n' + log;
+    // Only the size goes in the message. "400 KB in the attachment" is enough to tell
+    // whether the attachment is the whole log or a shortened one.
+    summary += `\nLog: ${formatBytes(log.length)}, attached as grtubeyou-log.txt`;
   }
 
-  return text;
+  return { summary, log };
 }
 
-async function sendToTelegram(text, env) {
+function formatBytes(chars) {
+  const bytes = chars * 2; // the report is UTF-16 in JS terms; Telegram counts UTF-8
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function sendToTelegram(report, env) {
   if (!env.TELEGRAM_TOKEN || !env.TELEGRAM_CHAT_ID) {
     // Loud on purpose and in the worker's own log, never to the caller: a wrong token must
     // not be discoverable from outside by probing response codes.
@@ -156,8 +187,90 @@ async function sendToTelegram(text, env) {
     return false;
   }
 
-  // Split rather than truncate. A log cut off at a fixed length is likely to lose the
-  // exception that caused the report, which is the one line that matters.
+  if (!await sendText(report.summary, env)) {
+    return false;
+  }
+
+  const log = report.log.trim();
+  if (!log) {
+    return true;
+  }
+
+  // The log goes up as a file. A Bot API document upload is capped at 50 MB, and the app
+  // sends far less than that, so this is not expected to trip - but if it does, the report
+  // still has to arrive, so the text path below is a real fallback rather than a formality.
+  if (log.length <= MAX_DOCUMENT_CHARS && await sendLogFile(log, env)) {
+    return true;
+  }
+
+  console.error('document upload unavailable, falling back to text chunks');
+  return sendTextChunks(report.summary + '\n\n----- log -----\n' + log, env);
+}
+
+/**
+ * Uploads the log as a .txt attachment.
+ *
+ * No Content-Type is set on purpose: fetch must add it itself together with the multipart
+ * boundary, and setting it by hand produces a body Telegram cannot parse - which it answers
+ * with a 400 that looks exactly like a bad token.
+ */
+async function sendLogFile(log, env) {
+  const form = new FormData();
+  form.append('chat_id', env.TELEGRAM_CHAT_ID);
+  form.append('caption', 'Full log');
+  form.append(
+    'document',
+    new Blob([log], { type: 'text/plain; charset=utf-8' }),
+    'grtubeyou-log.txt',
+  );
+
+  const res = await fetch(
+    `https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendDocument`,
+    { method: 'POST', body: form },
+  );
+
+  if (!res.ok) {
+    const detail = await res.text();
+    console.error('telegram sendDocument failed:', res.status, detail);
+    return false;
+  }
+
+  return true;
+}
+
+async function sendText(text, env) {
+  const res = await fetch(
+    `https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: env.TELEGRAM_CHAT_ID,
+        // NO parse_mode: the log is arbitrary application output and may contain
+        // underscores, brackets and backslashes, any of which Telegram would reject or
+        // mangle. Plain text cannot fail on content.
+        text,
+        disable_web_page_preview: true,
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    const detail = await res.text();
+    console.error('telegram sendMessage failed:', res.status, detail);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * The fallback path only, and only when the file upload is unavailable.
+ *
+ * Split rather than truncate. A log cut off at a fixed length is likely to lose the
+ * exception that caused the report, which is the one line that matters.
+ */
+async function sendTextChunks(text, env) {
   const chunks = splitForTelegram(text);
 
   for (let i = 0; i < chunks.length; i++) {
@@ -165,25 +278,7 @@ async function sendToTelegram(text, env) {
       ? `(part ${i + 1}/${chunks.length})\n` + chunks[i]
       : chunks[i];
 
-    const res = await fetch(
-      `https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: env.TELEGRAM_CHAT_ID,
-          // NO parse_mode: the log is arbitrary application output and may contain
-          // underscores, brackets and backslashes, any of which Telegram would reject or
-          // mangle. Plain text cannot fail on content.
-          text: part,
-          disable_web_page_preview: true,
-        }),
-      }
-    );
-
-    if (!res.ok) {
-      const detail = await res.text();
-      console.error('telegram send failed:', res.status, detail);
+    if (!await sendText(part, env)) {
       return false;
     }
   }

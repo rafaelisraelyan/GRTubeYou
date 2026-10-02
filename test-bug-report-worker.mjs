@@ -44,11 +44,33 @@ const ENV = {
 };
 
 /** Captures what would have been sent to Telegram, and answers with a chosen status. */
-function stubTelegram(status = 200) {
+function stubTelegram(status = 200, failDocument = false) {
   const sent = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
-    sent.push({ url: String(url), body: JSON.parse(init.body) });
+    const entry = { url: String(url), method: init.method };
+
+    if (String(url).includes('sendDocument')) {
+      entry.document = true;
+      entry.contentType = (init.headers && init.headers['Content-Type']) || '(set by fetch)';
+      if (init.body && typeof init.body.getAll === 'function') {
+        const file = init.body.get('document');
+        entry.filename = file && file.name;
+        entry.caption = init.body.get('caption');
+        entry.chatId = init.body.get('chat_id');
+        entry.content = file ? await file.text() : '';
+      }
+      // The caller must not set Content-Type on a multipart body; if it did, Telegram
+      // answers 400 and it looks exactly like a bad token.
+      if (failDocument) {
+        return { ok: false, status: 400, text: async () => 'stubbed document failure' };
+      }
+    } else {
+      entry.document = false;
+      entry.body = JSON.parse(init.body);
+    }
+
+    sent.push(entry);
     return { ok: status >= 200 && status < 300, status, text: async () => 'stubbed' };
   };
   return { sent, restore: () => { globalThis.fetch = realFetch; } };
@@ -81,42 +103,116 @@ const LOG = 'ERROR: boom\n\tat com.example.Foo.bar(Foo.java:1)\nat com.example.B
 const DESCRIPTION = 'Комментарии не открываются';
 const HEAD = 'version:     32.66\ndevice:      box\nandroid:     9';
 
-await test('the report reaches Telegram intact', async () => {
+await test('the report arrives as one message plus a log file', async () => {
   const t = stubTelegram();
   try {
     const res = await post({ head: HEAD, description: DESCRIPTION, log: LOG });
-    const text = t.sent[0].body.text;
 
     check('answers 200', res.status === 200, 'got ' + res.status);
-    check('sends exactly one message', t.sent.length === 1, 'got ' + t.sent.length);
-    check('carries what the user wrote', text.includes(DESCRIPTION));
-    check('carries the device block', text.includes('version:     32.66'));
-    check('carries the log', text.includes('at com.example.Foo.bar(Foo.java:1)'));
-    check('keeps the log tail', text.includes('Baz.java:2'), 'the last line is the important one');
+    check('exactly two sends: a message and a document',
+      t.sent.length === 2, 'got ' + t.sent.length);
+
+    const message = t.sent.find((s) => !s.document);
+    const file = t.sent.find((s) => s.document);
+
+    check('the message carries what the user wrote', message.body.text.includes(DESCRIPTION));
+    check('the message carries the device block', message.body.text.includes('version:     32.66'));
+    check('the message says the log is attached',
+      message.body.text.includes('grtubeyou-log.txt'));
+    check('the message is short', message.body.text.length < 1000,
+      'a summary of ' + message.body.text.length + ' chars is not a summary');
+
+    check('the log is uploaded as a file', !!file);
+    check('named grtubeyou-log.txt', file.filename === 'grtubeyou-log.txt', 'got ' + file.filename);
+    check('sent to the configured chat', file.chatId === ENV.TELEGRAM_CHAT_ID);
+    check('Content-Type left for fetch to set with its boundary',
+      file.contentType === '(set by fetch)', 'got ' + file.contentType);
   } finally {
     t.restore();
   }
 });
 
-await test('the log is split, never truncated', async () => {
+await test('the log file holds the log whole', async () => {
   const t = stubTelegram();
   try {
-    // 20k of log: enough to exceed one Telegram message.
     const long = Array.from({ length: 900 }, (_, i) => `line ${i} ` + 'x'.repeat(30)).join('\n');
     await post({ head: HEAD, description: '', log: long });
 
-    const total = t.sent.map((m) => m.body.text).join('');
-    check('split into several messages', t.sent.length > 1, 'got ' + t.sent.length);
-    check('nothing lost', total.includes('line 0 ') && total.includes('line 899 '));
-    check('every chunk is under Telegram\'s 4096 limit',
-      t.sent.every((m) => m.body.text.length <= 4096),
-      'longest ' + Math.max(...t.sent.map((m) => m.body.text.length)));
-    check('chunks are labelled so order is readable',
-      t.sent.some((m) => m.body.text.includes('(part 1/')),
-      'a split log with no labels cannot be read in order');
+    const file = t.sent.find((s) => s.document);
+    check('the file holds every line', file.content.includes('line 0 ') && file.content.includes('line 899 '));
+    check('the file is not chunked into messages', t.sent.length === 2,
+      'a real log produced ' + t.sent.length + ' sends');
   } finally {
     t.restore();
   }
+});
+
+await test('a log-only report still gets a file', async () => {
+  const t = stubTelegram();
+  try {
+    // Most crashes: the user can only say "it broke", and the log is the whole value.
+    const res = await post({ head: HEAD, description: '', log: LOG });
+    check('answers 200', res.status === 200, 'got ' + res.status);
+    check('the file carries the log',
+      t.sent.find((s) => s.document).content.includes('Foo.java:1'));
+  } finally {
+    t.restore();
+  }
+});
+
+await test('no log means no file, just the message', async () => {
+  const t = stubTelegram();
+  try {
+    const res = await post({ head: HEAD, description: 'no log this time', log: '' });
+    check('answers 200', res.status === 200, 'got ' + res.status);
+    check('sends only the message', t.sent.length === 1, 'got ' + t.sent.length);
+    check('no empty file is attached', !t.sent.some((s) => s.document));
+  } finally {
+    t.restore();
+  }
+});
+
+await test('a failed file upload falls back to text, losing nothing', async () => {
+  const t = stubTelegram(200, true); // sendDocument answers 400
+  try {
+    const res = await post({ head: HEAD, description: DESCRIPTION, log: LOG });
+
+    check('still answers 200', res.status === 200, 'got ' + res.status);
+    check('it did not give up on the report', t.sent.length >= 2);
+
+    const total = t.sent
+      .filter((s) => !s.document)
+      .map((s) => s.body.text)
+      .join('');
+    check('the fallback text carries the log', total.includes('Foo.java:1'));
+    check('the fallback text carries the description', total.includes(DESCRIPTION));
+    check('the fallback text is chunked under the 4096 limit',
+      t.sent.filter((s) => !s.document).every((s) => s.body.text.length <= 4096));
+  } finally {
+    t.restore();
+  }
+});
+
+await test('a full-size log is accepted, not refused as too large', async () => {
+  const t = stubTelegram();
+  try {
+    // The app caps its log at 600k characters. If the receiver's body limit sits below what
+    // the app builds, every large report comes back 413 and the user is told the log is too
+    // big - while the app was told nothing about the limit. These two numbers live in
+    // different repositories, so nothing but this test ties them together.
+    const big = 'ы'.repeat(600_000); // Cyrillic: 2 UTF-8 bytes per char, the worst case
+    const res = await post({ head: HEAD, description: 'big log', log: big });
+
+    check('answers 200', res.status === 200, 'got ' + res.status + ' - the receiver limit is below what the app sends');
+    check('the whole log is attached', t.sent.find((s) => s.document).content.length === big.length);
+  } finally {
+    t.restore();
+  }
+});
+
+await test('an absurd body is still refused', async () => {
+  const res = await post({ head: HEAD, description: 'x', log: 'y'.repeat(17 * 1024 * 1024) });
+  check('answers 413', res.status === 413, 'got ' + res.status);
 });
 
 await test('no parse_mode, so a log full of markup still sends', async () => {
@@ -149,18 +245,6 @@ await test('a report with neither text nor log is refused', async () => {
     const res = await post({ head: HEAD, description: '   ', log: '' });
     check('answers 400', res.status === 400, 'got ' + res.status);
     check('sends nothing', t.sent.length === 0, 'an empty report would read as a receiver bug');
-  } finally {
-    t.restore();
-  }
-});
-
-await test('a log-only report is accepted', async () => {
-  const t = stubTelegram();
-  try {
-    // Most crashes: the user can only say "it broke", and the log is the whole value.
-    const res = await post({ head: HEAD, description: '', log: LOG });
-    check('answers 200', res.status === 200, 'got ' + res.status);
-    check('still forwards the log', t.sent[0].body.text.includes('Foo.java:1'));
   } finally {
     t.restore();
   }
