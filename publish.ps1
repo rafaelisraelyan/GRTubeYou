@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string] $Owner = 'rafaelisraelyan',
 
     [string] $Repo = 'GRTubeYou',
@@ -21,7 +21,16 @@ param(
     # "GRTubeYou Beta" switch is on.
     [switch] $Beta,
 
-    [int] $BetaNumber = 0
+    [int] $BetaNumber = 0,
+
+# GRTubeYou: per-asset upload budget. A stall used to be allowed fifteen silent minutes
+# and then took the whole run down with it; see the upload loop for what that cost.
+[int] $uploadTimeoutSec = 120,
+
+[int] $uploadAttempts = 3,
+
+# How long to keep asking the CDN for the new manifest before giving up and failing.
+[int] $verifyMinutes = 4
 )
 
 $ErrorActionPreference = 'Stop'
@@ -83,7 +92,26 @@ $oldCode = [int]$codeMatch.Groups[1].Value
 $oldName = $nameMatch.Groups[1].Value
 Write-Ok "current: $oldName (code $oldCode)"
 
-if ($VersionCode -le 0) { $VersionCode = $oldCode + 1 }
+# GRTubeYou: reuse the version already in build.gradle instead of moving past it.
+#
+# This exists because a publish is NOT idempotent. The version is written into
+# build.gradle before the build, because it has to be baked into the APK - so a run that
+# dies during the upload leaves the project sitting on a version that was never published,
+# and the next run steps straight over it. 32.67 beta3 is the proof: its four APKs died on
+# a stalled connection, the run spent 44 minutes failing silently, and the retry came out
+# as beta4, leaving an empty beta3 tag and a versionCode nobody will ever install.
+#
+# With -Resume, the number in build.gradle is the number being published. The release is
+# found and its assets replaced, which is the path this script already had for a re-run.
+[switch] $Resume = $false
+
+if ($Resume) {
+    $VersionCode = $oldCode
+    $VersionName = $oldName
+    Write-Ok "resuming: reusing $oldName (code $oldCode) instead of burning the next number"
+} elseif ($VersionCode -le 0) {
+    $VersionCode = $oldCode + 1
+}
 
 $explicitVersion = [bool]$VersionName
 $oldBaseName = $oldName -replace '[- ]beta\.?\d+$', ''
@@ -104,7 +132,19 @@ Write-Ok "publishing: $VersionName (code $VersionCode)"
 # ------------------------------------------------- 1b. beta channel handling
 $isPrerelease = [bool]$Beta
 
-if ($Beta) {
+if ($Beta -and $Resume) {
+    # GRTubeYou: -Resume and beta numbering must not meet. The resumed name is already
+    # "32.67 beta3" and the block below appends a suffix, which would produce
+    # "32.67 beta3 beta1" and a tag nobody can explain. The number is read back out of the
+    # name so the rest of the script has the same $BetaNumber it would have computed.
+    $resumedBeta = [regex]::Match($VersionName, '[- ]beta\.?(\d+)$')
+    if ($resumedBeta.Success) {
+        $BetaNumber = [int]$resumedBeta.Groups[1].Value
+    } else {
+        Fail "-Resume was given but the version in build.gradle is not a beta ('$VersionName')"
+    }
+    Write-Ok "resuming beta $($BetaNumber) with the name as it stands"
+} elseif ($Beta) {
     if ($BetaNumber -le 0) {
         # Continue the existing beta counter instead of silently restarting at 1.
         # Defaulting to 1 reused the tag "v32.65-beta1" and overwrote the APKs of the
@@ -125,7 +165,12 @@ if ($Beta) {
     # NOTE: the space is only for display. GitHub refs and asset names cannot contain
     # spaces (they get rewritten to dots, which would break the download URLs), so
     # $safeVersion below is what ends up in the tag and in the file names.
-    $VersionName = "$VersionName beta$BetaNumber"
+    #
+    # Skipped when resuming: the name is already "32.67 beta3" and appending would make it
+    # "32.67 beta3 beta3". The branch above already read the number back out of it.
+    if (-not $Resume) {
+        $VersionName = "$VersionName beta$BetaNumber"
+    }
     Write-Ok "beta build, release will be a GitHub prerelease"
 }
 
@@ -241,18 +286,56 @@ foreach ($abi in $byAbi.Keys) {
 
     # NOTE: curl is used because Invoke-RestMethod -InFile streams the body with
     # Transfer-Encoding: chunked, which the uploads endpoint does not accept.
-    $tmpOut = [System.IO.Path]::GetTempFileName()
-    $httpCode = & curl.exe -s -o $tmpOut -w '%{http_code}' -X POST `
-        -H "Authorization: token $env:GITHUB_TOKEN" `
-        -H "Content-Type: application/octet-stream" `
-        --data-binary "@$($apk.FullName)" `
-        --max-time 900 `
-        $uploadUri
-    $respBody = if (Test-Path $tmpOut) { [System.IO.File]::ReadAllText($tmpOut) } else { '' }
-    Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue
+    #
+    # GRTubeYou: the timeout and the retry are the whole point of this loop.
+    #
+    # It used to be one curl with --max-time 900 and no retry. A stalled connection then
+    # cost fifteen silent minutes for this asset, four of them for the run, and ended in a
+    # bare "failed with HTTP 000" with no indication that anything had even been attempted -
+    # which is exactly how 32.67 beta3 lost all four of its APKs and burned a version
+    # number while appearing to hang for no reason.
+    #
+    # So: a stall now fails in two minutes, is retried twice, and every attempt prints
+    # itself. The worst case is three quick failures with a reason on screen, not three
+    # quarters of an hour of silence.
+    $httpCode = ''
+    $respBody = ''
+
+    for ($attempt = 1; $attempt -le $uploadAttempts; $attempt++) {
+        $mb = [math]::Round($apk.Length / 1MB, 1)
+        Write-Host ("    uploading {0} ({1} MB), attempt {2}/{3}" -f $assetName, $mb, $attempt, $uploadAttempts) -ForegroundColor DarkGray
+
+        $tmpOut = [System.IO.Path]::GetTempFileName()
+        $startedAt = Get-Date
+        $httpCode = & curl.exe -s -o $tmpOut -w '%{http_code}' -X POST `
+            -H "Authorization: token $env:GITHUB_TOKEN" `
+            -H "Content-Type: application/octet-stream" `
+            --data-binary "@$($apk.FullName)" `
+            --connect-timeout 30 `
+            --max-time $uploadTimeoutSec `
+            $uploadUri
+        $elapsed = [int]((Get-Date) - $startedAt).TotalSeconds
+        $respBody = if (Test-Path $tmpOut) { [System.IO.File]::ReadAllText($tmpOut) } else { '' }
+        Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue
+
+        if ($httpCode -eq '201' -or $httpCode -eq '200') {
+            Write-Host ("    done {0} in {1}s" -f $assetName, $elapsed) -ForegroundColor Green
+            break
+        }
+
+        # HTTP 000 is curl's "no response at all" - a stall, a DNS failure, a dropped
+        # connection. It is the one worth retrying: there is no answer to act on and it is
+        # usually a network moment rather than a rejected upload.
+        $reason = if ($httpCode -eq '000') { 'no response from the server' } else { "HTTP $httpCode" }
+        Write-Host ("    failed {0}: {1}" -f $assetName, $reason) -ForegroundColor Yellow
+
+        if ($attempt -lt $uploadAttempts) {
+            Start-Sleep -Seconds (10 * $attempt)
+        }
+    }
 
     if ($httpCode -ne '201' -and $httpCode -ne '200') {
-        Fail "Upload of $assetName failed with HTTP $httpCode : $respBody"
+        Fail "Upload of $assetName failed after $uploadAttempts attempt(s): $reason : $respBody"
     }
 
     $assets[$abi] = @{
@@ -323,13 +406,89 @@ try { $null = $manifest | ConvertFrom-Json } catch { Fail "Generated version.jso
 [System.IO.File]::WriteAllText($manifestPath, $manifest)
 Write-Ok $manifestPath
 
-# ---------------------------------------------------------------- 8. summary
+# ------------------------------------------------- 8. put the manifest on the branch
+#
+# GRTubeYou: this used to be a printed instruction and nothing more:
+#
+#   "Next: commit and push version.json"
+#
+# Which is how two releases in a row - 32.67 beta1 and beta2 - were created, uploaded,
+# and reported as done, while no user could see them. The app does not read the GitHub
+# release at all; it fetches $manifestName from the default branch. A release without a
+# pushed manifest is invisible, and it looks completely finished from here.
+#
+# So the push happens here, inside the script that produced the file, and the run is not
+# allowed to finish quietly until the channel has actually been seen serving the new
+# versionCode. Both channels get this - the previous fix lived in publish-beta.ps1, which
+# meant the stable channel could still skip it by calling this script directly, which is
+# the normal way to publish stable.
+
+Push-Location $DistPath
+try {
+    & git add $manifestName
+
+    & git diff --cached --quiet
+    $manifestStaged = ($LASTEXITCODE -ne 0)
+
+    if ($manifestStaged) {
+        Write-Step "Pushing $manifestName"
+        & git commit -m "${manifestName}: $VersionName to the channel" | Out-Null
+        if ($LASTEXITCODE -ne 0) { Fail "git commit of $manifestName failed" }
+        & git push | Out-Null
+        if ($LASTEXITCODE -ne 0) { Fail "git push of $manifestName failed" }
+        Write-Ok "$manifestName pushed"
+    } else {
+        Write-Warn "$manifestName is unchanged - nothing to push (already up to date?)"
+    }
+} finally {
+    Pop-Location
+}
+
+# ---------------------------------------------------------------- 9. verify delivery
+#
+# A release URL in a browser proves nothing. The only thing that matters is whether the
+# channel the app reads now serves the version that was just published, and raw.githubusercontent
+# is known to serve a stale copy for a couple of minutes after a push - so this polls.
+#
+# Exits non-zero when it never arrives. A warning would leave a failed delivery looking
+# like a successful publish, which is the specific failure this whole change exists to
+# stop.
+
+Write-Step "Verifying the channel serves versionCode $VersionCode"
+$manifestUrl = "https://raw.githubusercontent.com/$Owner/$Repo/main/$manifestName"
+$verifyDeadline = (Get-Date).AddMinutes($verifyMinutes)
+$servedCode = -1
+
+while ((Get-Date) -lt $verifyDeadline) {
+    try {
+        # The cache buster matters: without it the CDN can answer from cache for minutes.
+        $url = "$manifestUrl`?cb=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+        $raw = (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20).Content
+        $m = [regex]::Match($raw, '"versionCode"\s*:\s*(\d+)')
+        if ($m.Success) {
+            $servedCode = [int]$m.Groups[1].Value
+            if ($servedCode -ge $VersionCode) { break }
+        }
+    } catch {
+        # Not fetchable yet is normal while the push propagates.
+    }
+    Start-Sleep -Seconds 15
+}
+
+# ------------------------------------------------------------------ 10. summary
 Write-Host ''
 Write-Step "Done"
 Write-Host "  Release:  https://github.com/$Owner/$Repo/releases/tag/$tag"
-# The manifest name depends on the channel - printing version.json during a beta
-# publish sent me looking at the wrong file.
-Write-Host "  Manifest: https://raw.githubusercontent.com/$Owner/$Repo/main/$manifestName"
-Write-Host "  Next:     commit and push $manifestName in $DistPath"
-Write-Host ''
-Write-Host "  The app only sees a new version once $manifestName is on the default branch." -ForegroundColor Yellow
+Write-Host "  Manifest: $manifestUrl"
+
+if ($servedCode -ge $VersionCode) {
+    Write-Host "  Channel:  serving versionCode $servedCode" -ForegroundColor Green
+    Write-Host ''
+    Write-Host "  Published and delivered." -ForegroundColor Green
+} else {
+    Write-Host "  Channel:  still serving $servedCode, expected $VersionCode" -ForegroundColor Red
+    Write-Host ''
+    # Rule 10: a failure must be stated. Exiting 0 here would report a release that no
+    # user can see as a successful publish - the exact thing that went wrong twice.
+    Fail "the release exists but the channel never picked it up (served $servedCode, expected $VersionCode). The release and the assets are fine; ${manifestName} on $Owner/$Repo needs another push."
+}
