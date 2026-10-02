@@ -1,10 +1,11 @@
 {
   "package": {
-    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta9/GRTubeYou-32.67-beta9-universal.apk",
-    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta9/GRTubeYou-32.67-beta9-arm64-v8a.apk"],
-    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta9/GRTubeYou-32.67-beta9-armeabi-v7a.apk"],
-    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta9/GRTubeYou-32.67-beta9-x86.apk"]
+    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta10/GRTubeYou-32.67-beta10-universal.apk",
+    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta10/GRTubeYou-32.67-beta10-arm64-v8a.apk"],
+    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta10/GRTubeYou-32.67-beta10-armeabi-v7a.apk"],
+    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta10/GRTubeYou-32.67-beta10-x86.apk"]
   },
+  "32.67 beta10": {"versionCode": 2493, "changelog": ["Плеер: пилюля лайка и дизлайка стала одной целой, половинки смыкаются", "Плеер: расстояние между остальными кнопками осталось одинаковым", "Плеер: кнопка play больше не увеличена, подложка у неё как у соседей", "Плеер: иконка «качество видео» перерисована - HD и шестерёнка", "Плеер: кнопка «комментарии» перенесена сразу после пилюли лайка", "Плеер: обводка таймлайна скруглена по краям, а не прямоугольная"]},
   "32.67 beta9": {"versionCode": 2492, "changelog": ["Плеер: подложки под кнопками скруглены, а не квадратные", "Плеер: обводка фокуса повторяет подложку по размеру и округлению", "Плеер: пилюля лайка и дизлайка ровная, число равноудалено от краёв", "Плеер: одна половинка пилюли больше не ложится на другую", "Плеер: радиус пилюли исправлен - он был больше половины её высоты", "Исправлено: вторичным кнопкам доставалась подложка от первичных, из-за чего ряд выглядел квадратным"]},
   "32.67 beta8": {"versionCode": 2491, "changelog": ["Интерфейс улучшен и переведён в сторону Material Design", "Плеер: кнопки сидят в тёмных кругах, как в референсе, плей в середине крупнее", "Плеер: лайк и дизлайк - одна пилюля со счётчиками внутри", "Плеер: таймлайн толще, сегменты глав на нём видны", "Плеер: кнопка статистики заменена кнопкой выбора качества", "Плеер: строка главы стала читаемее", "Техническая пересборка: код тот же, что в beta7 - проверяем путь обновления"]},
   "32.67 beta7": {"versionCode": 2489, "changelog": ["x"]},
