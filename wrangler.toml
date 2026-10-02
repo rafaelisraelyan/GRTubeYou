@@ -4,6 +4,24 @@ compatibility_date = "2026-09-30"
 
 # GRTubeYou bug report receiver.
 #
+# Reports are kept in D1 AND forwarded to Telegram. The forwarding notifies a person; the row
+# is what lets the person fixing the bug read the report without Telegram, which matters more
+# than it sounds: there is no Bot API call that lists a chat's messages, so a report that only
+# goes to Telegram is a file somebody has to copy out by hand and carry over.
+#
+#   wrangler d1 execute grtubeyou-reports --remote \
+#     --command "SELECT id, received_at, description FROM reports ORDER BY id DESC LIMIT 10"
+#
+#   wrangler d1 execute grtubeyou-reports --remote \
+#     --command "SELECT log FROM reports WHERE id = 7" > report.txt
+#
+# There is deliberately no HTTP route that reads this table. A read endpoint on a report
+# receiver is an unauthenticated surface holding crash logs and would need a second secret to
+# be worth anything; the CLI means the only credential is the one already on this machine.
+#
+# Storage is best-effort. If the write fails the report is still forwarded and the app is
+# still told it worked - losing the queryable copy is not worth failing a real bug report.
+#
 # Nothing here is a secret - all three values are set with `wrangler secret put`, which
 # keeps them out of this file and out of the deployed source. The deployment is free on
 # Cloudflare's Workers free plan, which is enough for a channel this size.
@@ -15,6 +33,10 @@ compatibility_date = "2026-09-30"
 #
 # After deploying, put the full URL into BugReportSender.ENDPOINT in the app and rebuild.
 # Rotating a leaked path is then one `wrangler secret put REPORT_PATH` and a rebuild.
+[[d1_databases]]
+binding = "REPORTS"
+database_name = "grtubeyou-reports"
+database_id = "5c4032a0-2f31-4c4e-bb99-89939ae0fe1b"
 
 [observability]
 enabled = true

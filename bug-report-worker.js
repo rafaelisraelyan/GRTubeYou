@@ -16,9 +16,34 @@
  *
  * WHAT IT DOES
  * ------------
- * POST <path>  with a JSON body -> forwards to a Telegram chat as one message.
+ * POST <path>  with a JSON body -> stored in D1, then forwarded to a Telegram chat as one
+ * message plus a log file.
+ *
  * The log can be long, so it is split into Telegram-safe chunks rather than truncated:
  * a truncated log is exactly the part that is missing the crash.
+ *
+ * WHY BOTH D1 AND TELEGRAM
+ * -----------------------
+ * Forwarding notifies a person. It does not make the report readable by whoever has to fix
+ * it: there is no Bot API call that lists a chat's messages, so a report that only went to
+ * Telegram existed solely inside a chat window, and getting it out meant a person copying a
+ * file out by hand and carrying it somewhere else. That is not a theoretical inconvenience -
+ * the first real crash report came in exactly that way and the diagnosis waited on the copy.
+ *
+ * So the row is written first and the forward second. If the forward fails, the report is
+ * already safe and telegram_sent records that nobody was told. If the write fails, the report
+ * is still forwarded: storage is a convenience copy, and failing a genuine bug report because
+ * the convenience copy could not be written would be a bad trade in both directions.
+ *
+ * Reading it back is done with the CLI on purpose. An HTTP route that reads this table would
+ * be an unauthenticated surface holding crash logs and would need a second secret to be worth
+ * anything.
+ *
+ *   wrangler d1 execute grtubeyou-reports --remote \
+ *     --command "SELECT id, received_at, description FROM reports ORDER BY id DESC LIMIT 10"
+ *
+ *   wrangler d1 execute grtubeyou-reports --remote \
+ *     --command "SELECT log FROM reports WHERE id = 7" --json > report.txt
  *
  * SETUP (once, by whoever deploys this)
  * --------------------------------------
@@ -123,7 +148,18 @@ export default {
       return new Response('Too many reports from this address', { status: 429 });
     }
 
+    // Stored BEFORE forwarding, on purpose. Forwarding is a best-effort courtesy to a person,
+    // and if the Telegram call fails the report is exactly the thing that must not be lost -
+    // the app gets a 502 and a viewer is told their report did not arrive, so the copy that
+    // survives has to already be written.
+    const storedId = await storeReport(report, env, clientIp);
+
     const sent = await sendToTelegram(report, env);
+
+    if (storedId !== null) {
+      await markForwarded(env, storedId, sent);
+    }
+
     if (!sent) {
       return new Response('Forwarding failed', { status: 502 });
     }
@@ -131,6 +167,97 @@ export default {
     return new Response('ok', { status: 200 });
   },
 };
+
+/**
+ * Largest log written to D1, in JS characters.
+ *
+ * The app caps its own log at 600k characters, so this holds a real report whole and only ever
+ * trims something that arrived from somewhere else.
+ *
+ * Trimming keeps the TAIL, not the head. A crash is at the end of a log - that is where
+ * logcat puts the stack trace - so a report that was shortened from the front keeps the only
+ * part anyone needs. log_chars stores the real length either way, and log_truncated says which
+ * it was, so a shortened report never looks like a short one.
+ */
+const MAX_STORED_LOG_CHARS = 600000;
+
+/**
+ * Writes the report to D1.
+ *
+ * Never throws and never fails the request. Two distinct reasons, and the second is the one
+ * that matters:
+ *
+ *   - the binding may be absent, which happens in the tests and in any deployment where the
+ *     binding was dropped;
+ *   - the write itself may fail - a D1 outage, a too-large value, a missing table.
+ *
+ * In either case the report is still forwarded and the app is still answered 200. A viewer who
+ * hit a crash should never be told their report was lost because a convenience copy of it
+ * could not be written, and that is not a hypothetical trade: the whole point of the copy is
+ * to be a convenience.
+ *
+ * @returns the new row id, or null if nothing was stored
+ */
+async function storeReport(report, env, clientIp) {
+  if (!env || !env.REPORTS) {
+    console.error('REPORTS binding is not set, report was not stored');
+    return null;
+  }
+
+  try {
+    const full = report.log || '';
+    const truncated = full.length > MAX_STORED_LOG_CHARS;
+    const log = truncated ? full.slice(full.length - MAX_STORED_LOG_CHARS) : full;
+
+    const row = await env.REPORTS
+      .prepare(
+        `INSERT INTO reports
+           (received_at, path, client_ip, description, head, log, log_chars, log_truncated)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        new Date().toISOString(),
+        String(env.REPORT_PATH || ''),
+        clientIp || '',
+        report.description || '',
+        report.head || '',
+        log,
+        full.length,
+        truncated ? 1 : 0,
+      )
+      .run();
+
+    return row && row.meta && typeof row.meta.last_row_id === 'number'
+      ? row.meta.last_row_id
+      : null;
+  } catch (e) {
+    console.error('d1 store failed:', e && e.message);
+    return null;
+  }
+}
+
+/**
+ * Records whether the Telegram forward succeeded, once it is known.
+ *
+ * Best-effort in the same way and for the same reason: the row exists and the report is
+ * forwarded, and this is one column on top of that. A viewer who sees 200 and a stored row
+ * with telegram_sent = 0 has told us something useful - the forwarding broke and nobody was
+ * notified - which is worth a column and not worth an error path.
+ */
+async function markForwarded(env, rowId, sent) {
+  if (!env || !env.REPORTS || rowId === null) {
+    return;
+  }
+
+  try {
+    await env.REPORTS
+      .prepare('UPDATE reports SET telegram_sent = ? WHERE id = ?')
+      .bind(sent ? 1 : 0, rowId)
+      .run();
+  } catch (e) {
+    console.error('d1 update failed:', e && e.message);
+  }
+}
 
 /**
  * Splits the report into a short summary and a log.
@@ -142,6 +269,11 @@ export default {
  *
  * Field names are fixed here rather than trusted from the body, so a report cannot inject
  * extra headings by sending a field nobody declared.
+ *
+ * description and head are also returned separately, untouched, because the D1 row stores them
+ * in their own columns: a stored row can then be listed and skimmed with one SELECT, and the
+ * device block can be matched against, without having to parse a formatted message. The
+ * summary is still built for Telegram exactly as before - the split is additive.
  */
 function buildReport(body) {
   const head = body.head || '';
@@ -169,7 +301,7 @@ function buildReport(body) {
     summary += `\nLog: ${formatBytes(log.length)}, attached as grtubeyou-log.txt`;
   }
 
-  return { summary, log };
+  return { summary, log, description, head };
 }
 
 function formatBytes(chars) {

@@ -85,7 +85,7 @@ function stubTelegram(status = 200, failDocument = false) {
  * how many tests ran before it - the kind of order dependence that makes a suite untrustworthy.
  */
 let nextIp = 1;
-function post(body, path = '/' + PATH, method = 'POST', ip = null) {
+function post(body, path = '/' + PATH, method = 'POST', ip = null, env = ENV) {
   const headers = { 'Content-Type': 'application/json' };
   headers['CF-Connecting-IP'] = ip || ('10.0.0.' + nextIp++);
 
@@ -95,7 +95,7 @@ function post(body, path = '/' + PATH, method = 'POST', ip = null) {
       headers,
       body: method === 'POST' ? JSON.stringify(body) : undefined,
     }),
-    ENV,
+    env,
   );
 }
 
@@ -326,6 +326,164 @@ await test('rate limiting stops a script hammering the path', async () => {
     // And the limit must not have bled onto a different address.
     const other = await post({ head: HEAD, description: 'a real user', log: LOG });
     check('a different address is unaffected', other.status === 200, 'got ' + other.status);
+  } finally {
+    t.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// D1 storage.
+//
+// Why these exist: the report used to exist only as a Telegram message, and there is no Bot API
+// call that lists a chat's messages. So the one copy of a crash log lived somewhere nobody
+// fixing the bug could read, and getting it out meant a person copying a file by hand. The row
+// is what fixes that, which makes its contents worth asserting rather than assuming.
+//
+// The second half matters more than the first. Storage is a convenience copy of a real bug
+// report, so it must never be able to take the report down: a viewer who hit a crash must
+// never be told their report was lost because a copy of it could not be written.
+// ---------------------------------------------------------------------------
+
+/** A D1 binding that records what was bound, or throws, as told. */
+function stubD1({ throwOnInsert = false } = {}) {
+  const rows = [];
+  const updates = [];
+
+  return {
+    rows,
+    updates,
+    binding: {
+      prepare(sql) {
+        const isInsert = /^\s*INSERT/i.test(sql);
+        return {
+          bind(...values) {
+            return {
+              async run() {
+                if (isInsert && throwOnInsert) {
+                  throw new Error('stubbed D1 outage');
+                }
+                if (isInsert) {
+                  rows.push(values);
+                  return { meta: { last_row_id: rows.length } };
+                }
+                updates.push(values);
+                return { meta: { changes: 1 } };
+              },
+            };
+          },
+        };
+      },
+    },
+  };
+}
+
+await test('the report is stored, whole, in its own columns', async () => {
+  const t = stubTelegram();
+  const d1 = stubD1();
+  try {
+    const res = await post(
+      { head: HEAD, description: DESCRIPTION, log: LOG },
+      '/' + PATH, 'POST', null,
+      { ...ENV, REPORTS: d1.binding });
+
+    check('answers 200', res.status === 200, 'got ' + res.status);
+    check('one row written', d1.rows.length === 1, 'got ' + d1.rows.length);
+
+    const row = d1.rows[0];
+    // Columns in INSERT order: received_at, path, client_ip, description, head, log,
+    // log_chars, log_truncated.
+    check('the description is in its own column', row[3] === DESCRIPTION, 'got ' + JSON.stringify(row[3]));
+    check('the device block is in its own column', row[4] === HEAD);
+    check('the log is stored whole', row[5] === LOG);
+    check('the real log length is recorded', row[6] === LOG.length, 'got ' + row[6]);
+    check('not marked as truncated', row[7] === 0, 'got ' + row[7]);
+    check('the client address is recorded', /^\d+\.\d+\.\d+\.\d+$/.test(row[2]), 'got ' + row[2]);
+    check('the receiving timestamp is ISO', /^\d{4}-\d{2}-\d{2}T/.test(row[0]), 'got ' + row[0]);
+
+    check('the forwarding outcome is recorded', d1.updates.length === 1, 'got ' + d1.updates.length);
+    check('marked as forwarded', d1.updates[0][0] === 1, 'got ' + d1.updates[0][0]);
+  } finally {
+    t.restore();
+  }
+});
+
+await test('a report is stored BEFORE it is forwarded', async () => {
+  // Order, not just presence. If forwarding came first and Telegram failed, the worker would
+  // answer 502 having stored nothing - and the one copy of a genuine crash would be the copy
+  // that was being made when the network broke.
+  const t = stubTelegram(500);
+  const d1 = stubD1();
+  try {
+    await post({ head: HEAD, description: 'x', log: LOG }, '/' + PATH, 'POST', null,
+      { ...ENV, REPORTS: d1.binding });
+
+    check('the row exists even though forwarding failed', d1.rows.length === 1);
+    check('and it records that nobody was notified', d1.updates[0][0] === 0, 'got ' + d1.updates[0][0]);
+  } finally {
+    t.restore();
+  }
+});
+
+await test('a D1 outage still delivers the report and still answers 200', async () => {
+  const t = stubTelegram();
+  const d1 = stubD1({ throwOnInsert: true });
+  try {
+    const res = await post(
+      { head: HEAD, description: DESCRIPTION, log: LOG },
+      '/' + PATH, 'POST', null,
+      { ...ENV, REPORTS: d1.binding });
+
+    // The whole point of the second half of this suite: storage is best-effort, and a viewer
+    // whose app crashed is never told their report vanished because of a database.
+    check('answers 200', res.status === 200, 'got ' + res.status);
+    check('the report was still forwarded', t.sent.length === 2, 'got ' + t.sent.length);
+    const message = t.sent.find((s) => !s.document);
+    check('and it still carried what the user wrote', message.body.text.includes(DESCRIPTION));
+  } finally {
+    t.restore();
+  }
+});
+
+await test('no D1 binding at all still delivers the report', async () => {
+  // A deployment where the binding was never added must behave like the old receiver, not like
+  // a broken one. This is also the configuration every earlier test in this file runs under.
+  const t = stubTelegram();
+  try {
+    const res = await post({ head: HEAD, description: DESCRIPTION, log: LOG });
+    check('answers 200', res.status === 200, 'got ' + res.status);
+    check('the report was still forwarded', t.sent.length === 2, 'got ' + t.sent.length);
+  } finally {
+    t.restore();
+  }
+});
+
+await test('an over-long log is trimmed from the tail, and says so', async () => {
+  const t = stubTelegram();
+  const d1 = stubD1();
+  try {
+    // A crash is at the END of a log - that is where logcat puts the stack trace. So a report
+    // shortened from the front keeps the one part nobody can do without, and a report shortened
+    // from the back is useless.
+    //
+    // The head is marked with a name rather than asserted absent in general: an earlier version
+    // filled the log with a repeated word and asserted the word was gone, which failed for a
+    // good reason - the filler was only 630k against a 600k cap, so 30k of it was always going
+    // to survive. Naming the exact first line says which lines went and which stayed.
+    const HEAD_MARKER = 'FIRST-LINE-OF-THE-LOG';
+    const log = HEAD_MARKER + '\n' + 'x'.repeat(700000)
+      + '\nFATAL EXCEPTION: main\n\tat com.example.TheRealCrash(TheRealCrash.java:7)';
+    const res = await post({ head: HEAD, description: '', log: log }, '/' + PATH, 'POST', null,
+      { ...ENV, REPORTS: d1.binding });
+
+    check('answers 200', res.status === 200, 'got ' + res.status);
+    const row = d1.rows[0];
+    check('the stored log is within the cap', row[5].length <= 600000, 'got ' + row[5].length);
+    check('the stack trace survived', row[5].includes('TheRealCrash.java:7'));
+    check('the first line did not', !row[5].includes(HEAD_MARKER));
+    check('the real length is still recorded', row[6] === log.length, 'got ' + row[6]);
+    // Without this a trimmed report is indistinguishable from a short one, and reads as though
+    // there is nothing more to look at.
+    check('marked as truncated', row[7] === 1, 'got ' + row[7]);
   } finally {
     t.restore();
   }
