@@ -1,10 +1,11 @@
 {
   "package": {
-    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta14/GRTubeYou-32.67-beta14-universal.apk",
-    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta14/GRTubeYou-32.67-beta14-arm64-v8a.apk"],
-    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta14/GRTubeYou-32.67-beta14-armeabi-v7a.apk"],
-    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta14/GRTubeYou-32.67-beta14-x86.apk"]
+    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta15/GRTubeYou-32.67-beta15-universal.apk",
+    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta15/GRTubeYou-32.67-beta15-arm64-v8a.apk"],
+    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta15/GRTubeYou-32.67-beta15-armeabi-v7a.apk"],
+    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta15/GRTubeYou-32.67-beta15-x86.apk"]
   },
+  "32.67 beta15": {"versionCode": 2498, "changelog": ["Плеер: половинка лайка больше не светлеет - в beta14 это читалось как наведение", "Плеер: палец, за который проголосовали, красится в цвет темы; на серой схеме - в красный"]},
   "32.67 beta14": {"versionCode": 2497, "changelog": ["Плеер: вернулась шестерёнка настроек - в beta13 её не было в ряду", "Плеер: равные отступы от числа и иконки до разделителя между лайком и дизлайком", "Плеер: половинка, за которую проголосовали, становится светлее"]},
   "32.67 beta13": {"versionCode": 2496, "changelog": ["Исправлено: на Android 14 приложение падало при запуске и вообще не открывалось", "Плеер: подложка таймлайна стала намного тоньше и прилегает к дорожке", "Плеер: лайк и дизлайк смыкаются в одну целую пилюлю", "Плеер: между лайком и дизлайком тонкий вертикальный разделитель"]},
   "32.67 beta12": {"versionCode": 2495, "changelog": ["Плеер: подложка таймлайна стала заметно короче, по краям экрана появились отступы", "Плеер: таймлайн больше не тянется от края до края - блок выглядит собраннее", "Плеер: высота и скругление подложки сохранены"]},
