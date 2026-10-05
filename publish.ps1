@@ -439,7 +439,25 @@ $assets = @{}
 # It used to be re-fetched inside the loop for every ABI, which was four extra API calls for
 # four files and - worse - meant each file was planning its replacement against a list that the
 # previous files had already changed.
-$currentAssets = @(Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/$($release.id)/assets" -Headers $headers -Method Get)
+# GRTubeYou: NO @() WRAPPER HERE, and this is not a style choice.
+#
+# In PowerShell 5.1 `@(...)` around a cmdlet that returns a JSON ARRAY does not flatten it - it
+# wraps the array as a single element, so `@(Invoke-RestMethod ...)` is an Object[] of Count 1
+# whose one element is another Object[] of Count 4. Piping does flatten it. So the wrapper looked
+# defensive and was the bug: every $existingAsset came out as an Object[] rather than one asset,
+# and `[int64]$existingAsset.size` failed with
+#
+#     Cannot convert System.Object[] to System.Int64
+#
+# The pipeline already yields a flat Object[] when there is more than one asset and the bare object
+# when there is exactly one, and both forms pipe correctly. Two `@()` uses further down the loop
+# wrap PIPELINE results and are harmless - that distinction is what makes the removal above easy
+# to get wrong if it is ever moved, so it is stated here rather than left to be rediscovered.
+#
+# This shipped in a release attempt and failed the upload of the first asset, before anything was
+# deleted or renamed. It was found by running the exact failing line against the live release and
+# reading the type, not by reading the line.
+$currentAssets = Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/$($release.id)/assets" -Headers $headers -Method Get
 
 foreach ($abi in $byAbi.Keys) {
     $apk = $byAbi[$abi]
