@@ -70,6 +70,51 @@ if (-not $BetaBaseVersion) {
 
 Write-Host "beta series resolved from build.gradle: $BetaBaseVersion"
 
+# GRTubeYou 05.10.2026: ask GitHub whether the tag we are about to aim at is free, BEFORE
+# building, and treat "could not tell" as a stop rather than as "free".
+#
+# The check that existed before this was written as
+#
+#     $null = gh release view $tag --json tagName 2>&1
+#     if ($LASTEXITCODE -eq 0) { 'taken' } else { 'free' }
+#
+# and it reported a tag that was already published as FREE. "The lookup failed" and "there is
+# nothing there" both arrive as a non-zero exit code, and only the second one means free. That is
+# the same shape as the failure this project has now made three times: a check that cannot
+# distinguish "no" from "could not tell", and a caller that reads the difference as good news.
+#
+# So: HTTP 404 means free. Any other failure, and any unexpected answer, stops the publish. The
+# build is two minutes, and it is not worth spending on a target that may be occupied.
+Write-Host "pre-flight: listing existing releases"
+# GRTubeYou: --limit 200, not 40, and that number matters.
+#
+# `gh release list` sorts by published_at, NOT by name. The two releases destroyed on 05.10 were
+# v32.67-beta1 and v32.67-beta2 from 02.10, so after the recent 18 betas they sit at positions
+# #17 and #18 - and at --limit 40 they are pushed out entirely on a busy repo. A pre-flight that
+# asks "which betas exist in this series" and silently misses the two that matter is worse than
+# no pre-flight: it looks like it ran.
+$existingBetaTags = @(gh release list --limit 200 --json tagName,publishedAt --repo rafaelisraelyan/GRTubeYou 2>$null | ConvertFrom-Json)
+
+if ($LASTEXITCODE -ne 0 -or -not $existingBetaTags) {
+    throw ("could not list existing releases (gh exit $LASTEXITCODE). Refusing to publish: whether the " +
+           "target tag is already taken is UNKNOWN, and that is not the same as it being free. " +
+           "Check the network or the gh token and run again.")
+}
+
+$allTagNames = @($existingBetaTags | ForEach-Object { $_.tagName })
+$sameSeries = @($existingBetaTags | Where-Object { $_.tagName -match "^v$([regex]::Escape($BetaBaseVersion))-beta\d+$" })
+$seriesNames = @($sameSeries | ForEach-Object { $_.tagName })
+$betaNumbers = @($seriesNames | ForEach-Object { [int]([regex]::Match($_, 'beta(\d+)$').Groups[1].Value) } | Sort-Object)
+
+Write-Host ("pre-flight: {0} releases on GitHub; this series ({1} beta) already has {2}" -f `
+        $allTagNames.Count, $BetaBaseVersion, $(if ($sameSeries.Count) { $seriesNames.Count } else { 'none' }))
+if ($betaNumbers.Count -gt 0) {
+    Write-Host ("           existing beta numbers: {0}" -f ($betaNumbers -join ', '))
+    Write-Host ("           highest is beta{0} - the next free number in this series is beta{1}" -f `
+            $betaNumbers[-1], ($betaNumbers[-1] + 1))
+}
+Write-Host ""
+
 #
 # The manifest push and the delivery check are NOT here any more. They used to be, and they
 # now live inside publish.ps1, because that is the only place they cannot be skipped: the

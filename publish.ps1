@@ -62,7 +62,27 @@
 # Requires -VersionName and -VersionCode to be read out of the APK with aapt2 and passed in
 # explicitly. Guessing them is the one failure mode this parameter must not allow, because a
 # wrong versionCode here produces a release the channel lists and no device can install.
-[string] $PrebuiltDir = ''
+[string] $PrebuiltDir = '',
+
+# GRTubeYou 05.10.2026: overwrite the APKs of a release that already exists.
+#
+# OFF BY DEFAULT, AND THAT IS THE WHOLE POINT.
+#
+# The run that destroyed two shipped releases printed its warning twice, in capitals, with the
+# tag and the original publication date:
+#
+#     !! release v32.67-beta2 already exists (id 401604328, published 2026-10-02T07:08:26Z)
+#     !! its assets are about to be OVERWRITTEN - a different versionCode under the same tag cannot be undone
+#
+# Both times the warning was in the log and both times nobody acted on it, including me. A warning
+# that can be lost - by a filtered log, by a tired read, by anything - is not a guard. So the
+# default is now to STOP, and continuing requires naming the switch, which makes it a decision
+# rather than an oversight.
+#
+# The narrow correct use is re-running the exact same publish, where the assets on the release are
+# already this build - and even then the fast path below skips the upload entirely and nothing is
+# touched. This switch exists for the case where the assets are genuinely wrong.
+[switch] $AllowOverwriteExistingRelease
 )
 
 $ErrorActionPreference = 'Stop'
@@ -403,14 +423,57 @@ $releaseBody = if ($ChangeLog.Count) { ($ChangeLog | ForEach-Object { "- $_" }) 
 Write-Step "Creating GitHub release $tag"
 
 $release = $null
+$existingRelease = $null
+
 try {
-    $existing = Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/tags/$tag" -Headers $headers -Method Get
-    # This path silently replaced the APKs of an already published release. That is
-    # only ever correct when re-running the exact same publish, so say so loudly.
-    Write-Warn "release $tag already exists (id $($existing.id), published $($existing.published_at))"
-    Write-Warn "its assets are about to be OVERWRITTEN - a different versionCode under the same tag cannot be undone"
-    $release = $existing
+    $existingRelease = Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/tags/$tag" -Headers $headers -Method Get
 } catch {
+    # GRTubeYou: a 404 means "no such release", which is the normal case. Anything else - a
+    # network blip, a bad token, a rate limit - means we do NOT know whether the tag is taken.
+    #
+    # Treating the two the same is how a run can aim at an occupied tag without noticing: the
+    # GET throws, the catch runs, and the code below creates a release over the top of one that
+    # was already published. So the status is inspected, and only a 404 is allowed to proceed.
+    $status = $null
+    try { $status = [int]$_.Exception.Response.StatusCode } catch { $status = $null }
+
+    if ($status -ne 404) {
+        Fail ("could not read release '$tag' and the failure was NOT 'not found' (HTTP $status): " +
+              "$($_.Exception.Message) - refusing to publish, because whether that tag is already " +
+              "taken is unknown, and creating over it destroys whatever is there")
+    }
+}
+
+if ($existingRelease) {
+    # GRTubeYou: a hard stop, not a warning. See -AllowOverwriteExistingRelease for what happened
+    # while this was a warning that nobody had to read.
+    if (-not $AllowOverwriteExistingRelease) {
+        Write-Host ""
+        Write-Host "  ============================ STOPPED ============================" -ForegroundColor Red
+        Write-Host "  release $tag ALREADY EXISTS and is about to be overwritten." -ForegroundColor Red
+        Write-Host "    id:       $($existingRelease.id)" -ForegroundColor Red
+        Write-Host "    name:     $($existingRelease.name)" -ForegroundColor Red
+        Write-Host "    built:    $($existingRelease.created_at)" -ForegroundColor Red
+        Write-Host "    updated:  $($existingRelease.updated_at)  <- if this is recent, someone already did this" -ForegroundColor Red
+        Write-Host "    assets:   $($existingRelease.assets.Count)" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Overwriting its assets cannot be undone: the APKs of a published release are" -ForegroundColor Red
+        Write-Host "  replaced in place, under the same tag." -ForegroundColor Red
+        Write-Host "" -ForegroundColor Red
+        Write-Host "  If you meant to re-run the SAME publish, check first that the assets there" -ForegroundColor Red
+        Write-Host "  are already this build - the fast path skips identical files and nothing is" -ForegroundColor Red
+        Write-Host "  touched, so it needs no switch." -ForegroundColor Red
+        Write-Host "" -ForegroundColor Red
+        Write-Host "  To overwrite anyway, pass -AllowOverwriteExistingRelease." -ForegroundColor Red
+        Write-Host "  ================================================================" -ForegroundColor Red
+        Write-Host ""
+        Fail "refusing to overwrite existing release $tag"
+    }
+
+    Write-Warn "release $tag already exists (id $($existingRelease.id), published $($existingRelease.published_at))"
+    Write-Warn "OVERWRITE explicitly allowed via -AllowOverwriteExistingRelease - its assets will be replaced"
+    $release = $existingRelease
+} else {
     $payload = @{
         tag_name         = $tag
         name             = "GRTubeYou $VersionName"
