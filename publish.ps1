@@ -40,6 +40,18 @@
     # switch says what to do; that check says whether it was done.
     [switch] $Resume,
 
+    # GRTubeYou 05.10.2026: which beta of the series this is, decided by the CALLER.
+    #
+    # When 0, the number is derived from the beta suffix already in build.gradle (+1). That
+    # derivation is only valid while build.gradle holds the highest number ever published in the
+    # series, and it does not: deleting v32.67-beta1 and beta2 on 05.10 restarted that suffix at 1
+    # while beta5..beta18 stayed published, so the derivation aimed the run at v32.67-beta4 - a real
+    # release from 02.10 - and would have overwritten its four APKs. The wrapper now reads the
+    # highest number that actually exists on GitHub and passes it here.
+    #
+    # The check that the tag is free is below and is unconditional, so a wrong number here stops the
+    # publish rather than destroying a release. This parameter exists so the run does not waste a
+    # build discovering that.
     [int] $BetaNumber = 0,
 
 # GRTubeYou: per-asset upload budget. A stall used to be allowed fifteen silent minutes
@@ -702,14 +714,138 @@ function Esc($s) { $s -replace '\\', '\\\\' -replace '"', '\"' }
 # into the next manifest and the changelog history kept resetting. The "package"
 # member matches this pattern too, but it carries no versionCode, so the check
 # below skips it.
-$kept = New-Object System.Collections.Generic.List[string]
+# GRTubeYou 06.10.2026: A NAME MAY APPEAR ONCE, AND THE DUPLICATES THAT GOT IN ARE REMOVED HERE.
+#
+# The manifest has been carrying "32.67 beta1" and "32.67 beta2" twice each since 05.10 - once at the
+# codes 2503/2504 that were published and then destroyed, once at 2483/2484 from 02.10. Same key,
+# two codes, four lines. Nothing complained: ConvertFrom-Json keeps the LAST one, so the manifest
+# parsed fine, and the app's TreeMap is keyed by versionCode so both codes were real entries to it.
+# Two entries with one name is a manifest that says "32.67 beta1" and means two different builds,
+# and nothing in the format can express which one a reader saw.
+#
+# So the newest wins, by code, and the older copy of a name is dropped. That is the only choice
+# that loses nothing: the survivor is the one a device on that code should be told about, and the
+# entry being dropped is one nobody can install - either its tag is gone, or its code is below the
+# one already published.
+#
+# Measured on the manifest as it stood before this change: 42 entries, 40 unique names,
+# 2 duplicates. Kept-by-newest gives 40 entries, which is the count the next manifest should carry.
+# NOTE ON THE SHAPE: name -> @{ Code; Line }, and the lines are emitted in the order they were read.
+#
+# An earlier version of this used a List[string] plus a hashtable of names, and deleted the older
+# copy by index while iterating - which is right until there are two duplicates, and then quietly
+# keeps one of them, because the index shifts under the loop. A hashtable of entries has no index
+# to shift. The manifest is tens of lines, so being obviously correct costs nothing here.
+$keptByName = [ordered]@{}
+
 foreach ($m in [regex]::Matches($oldManifest, '"(?<v>[^"]+)"\s*:\s*\{(?<body>[^{}]*(?:\{[^{}]*\}[^{}]*)*)\}')) {
     $vn = $m.Groups['v'].Value
     $body = $m.Groups['body'].Value
     $cm = [regex]::Match($body, '"versionCode"\s*:\s*(\d+)')
-    if ($cm.Success -and [int]$cm.Groups[1].Value -lt $VersionCode) {
-        $kept.Add("  `"$vn`": {$body}")
+
+    if (-not $cm.Success -or [int]$cm.Groups[1].Value -ge $VersionCode) {
+        continue
     }
+
+    $entryCode = [int]$cm.Groups[1].Value
+
+    if ($keptByName.Contains($vn)) {
+        $heldCode = [int]$keptByName[$vn].Code
+
+        if ($entryCode -le $heldCode) {
+            Write-Host ("  duplicate name '{0}': keeping code {1}, dropping code {2}" -f $vn, $heldCode, $entryCode)
+            continue
+        }
+
+        Write-Host ("  duplicate name '{0}': keeping code {1}, dropping code {2}" -f $vn, $entryCode, $heldCode)
+    }
+
+    $keptByName[$vn] = @{ Code = $entryCode; Line = "  `"$vn`": {$body}" }
+}
+
+$kept = @($keptByName.Values | ForEach-Object { $_.Line })
+
+# GRTubeYou 06.10.2026: AN ENTRY WHOSE RELEASE NO LONGER EXISTS IS DROPPED HERE.
+#
+# What prompted it: v32.67-beta1 and v32.67-beta2 were deleted on 05.10 - by request, because their
+# APKs had been overwritten - and their manifest entries stayed. So the manifest advertised two
+# versions nobody can install.
+#
+# WORTH BEING PRECISE ABOUT THE HARM, because I got it wrong when I raised it. I told the user those
+# entries were "broken download links" and that someone who saved one would get a failed download.
+# That is not true, and the code says so: AppVersionChecker reads versionName, versionCode and
+# changelog from a version entry, and downloadUrl ONLY from "package". There is no per-version APK
+# link in this format at all - the manifest has exactly four https URLs and all four are under
+# "package". So a dead entry shows a version in the update list and offers no way to install it,
+# which is misleading rather than broken.
+#
+# The real damage is smaller than I claimed and still worth fixing: the entry names a build that was
+# destroyed, its changelog describes code that no longer exists anywhere, and it takes up a version
+# slot a viewer scrolls past. Removing them was the user's call.
+#
+# WHY IT LIVES HERE AND NOT IN A SCRIPT: the manifest is rewritten from the old one on every publish,
+# so anything not done here comes straight back on the next release. That is how the entries survived
+# a deletion in the first place.
+#
+# THE TAG A NAME IMPLIES, derived the same way the publisher derives it at release time:
+# "32.67 beta1" -> "v32.67-beta1", "32.64" -> "v32.64". One rule, spaces to dashes, "v" in front.
+#
+# FAIL-SAFE TOWARD KEEPING. If the release list cannot be fetched, nothing is dropped and the run
+# says so. Getting this wrong in the other direction - dropping history because the network blinked -
+# loses changelog entries nobody can get back, and no dead entry costs anyone a download.
+$knownTags = $null
+$tagsUri = "$apiBase/repos/$Owner/$Repo/releases?per_page=100"
+
+try {
+    $knownTags = @(Invoke-RestMethod -Uri $tagsUri -Headers $headers -Method Get |
+        ForEach-Object { $_.tag_name })
+    Write-Host "  release list: $($knownTags.Count) tags known"
+
+    # A full page means there may be more, and pruning against a truncated list would drop entries
+    # whose releases exist on page 2. Same reasoning as --limit 200 in publish-beta.ps1: a partial
+    # list is not the same as an empty one.
+    #
+    # NOTE the count is read into a local first: $knownTags is set to $null below, and a
+    # "release list came back full ($null of 100)" message is a message that lies.
+    $tagCount = $knownTags.Count
+
+    # An EMPTY list is "could not tell", not "nothing exists". This is not hypothetical: it is what
+    # the test found on the first run, because the block below prunes every entry whose tag is
+    # absent, and with an empty list every tag is absent. A repo that had just had a release created
+    # cannot legitimately return zero, so an empty answer means the request did not deliver - and
+    # acting on it would wipe the entire changelog history in one run.
+    #
+    # Found by executing the block with an empty list, not by reading it. The guard above the loop was
+    # written and looked sufficient, because "the call threw" and "the call returned nothing" feel
+    # like the same situation and are not.
+    if ($tagCount -eq 0) {
+        $knownTags = $null
+        Write-Warn "release list came back empty; that is 'could not tell', so nothing is pruned"
+    } elseif ($tagCount -ge 100) {
+        $knownTags = $null
+        Write-Warn "release list came back full ($tagCount of 100 per page); not pruning on a truncated list"
+    }
+} catch {
+    $knownTags = $null
+    Write-Warn "could not list releases ($($_.Exception.Message)); keeping every existing entry, nothing pruned"
+}
+
+if ($null -ne $knownTags) {
+    $surviving = New-Object System.Collections.Generic.List[string]
+
+    foreach ($line in $kept) {
+        $name = [regex]::Match($line, '^\s*"(?<n>[^"]+)"').Groups['n'].Value
+        $impliedTag = 'v' + ($name -replace '\s+', '-')
+
+        if ($knownTags -contains $impliedTag) {
+            $surviving.Add($line)
+            continue
+        }
+
+        Write-Host ("  dropping entry '{0}': release {1} does not exist" -f $name, $impliedTag)
+    }
+
+    $kept = @($surviving)
 }
 
 # NOTE: build the member lines first and join with ',' - never append the comma
