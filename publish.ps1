@@ -717,7 +717,16 @@ foreach ($m in [regex]::Matches($oldManifest, '"(?<v>[^"]+)"\s*:\s*\{(?<body>[^{
 # invalid JSON and the app then shows "Expected literal value at character N".
 # Single-quoted literals keep the double quotes readable without escaping.
 $packageLines = @()
+
+# NOTE: "package" is a section, not a version entry.
+#
+# The app iterates every top-level key except this one and reads versionCode from each, so nothing
+# in here may look like a published version. The keys are deliberately nameless of any version and
+# carry no number: the app's download links, and a note for a human reading the file. A member with
+# a number in it would be counted as a release and would sort into the version list on a value
+# nobody chose.
 $packageLines += '    "downloadUrl": "' + $assets['universal'].Url + '"'
+$packageLines += '    "note": "not a release entry: the app reads versions from the other keys"'
 
 foreach ($abi in ($assets.Keys | Sort-Object)) {
     if ($abi -eq 'universal') { continue }
