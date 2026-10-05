@@ -434,25 +434,91 @@ Write-Step "Uploading APK assets"
 # downloadUrlList_32.60_arm64-v8a, which the app does not recognise.
 $assets = @{}
 
+# GRTubeYou: the release's assets are read ONCE, here, not per file.
+#
+# It used to be re-fetched inside the loop for every ABI, which was four extra API calls for
+# four files and - worse - meant each file was planning its replacement against a list that the
+# previous files had already changed.
+$currentAssets = @(Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/$($release.id)/assets" -Headers $headers -Method Get)
+
 foreach ($abi in $byAbi.Keys) {
     $apk = $byAbi[$abi]
     # NOTE: $safeVersion, not $VersionName - a space in an asset name is rewritten
     # to a dot by GitHub and the manifest links would 404.
     $assetName = "GRTubeYou-$safeVersion-$abi.apk"
-    # Re-runs would fail with "already_exists", so drop the previous copy first.
-    $currentAssets = Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/$($release.id)/assets" -Headers $headers -Method Get
-    foreach ($ex in @($currentAssets)) {
-        if ($ex -ne $null -and $ex.name -eq $assetName) {
-            Write-Ok "replacing existing asset $assetName"
-            Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/assets/$($ex.id)" -Headers $headers -Method Delete | Out-Null
-        }
+
+    # GRTubeYou: DELETE THE OLD ASSET LAST, NOT FIRST.
+    #
+    # This used to delete then upload, because a direct upload fails with "already_exists".
+    # That left the file missing from the moment of the delete until the end of the upload - seven
+    # to seventeen seconds per asset, and with four assets the window opened on the last one only
+    # after the first three had already been swapped. If the run died in the middle the release
+    # was left holding a mix of new files and none, with the manifest already pointing at all four:
+    # a manifest that promises a download which 404s.
+    #
+    # So: upload under a temporary name while the old one is still downloadable, delete, then
+    # rename into place. The gap is now the two API calls in between - milliseconds - and the old
+    # file is the only thing missing, rather than the new one.
+    $existingAsset = $currentAssets | Where-Object { $_ -ne $null -and $_.name -eq $assetName } | Select-Object -First 1
+
+    # A temp name left behind by a run that died between upload and rename. Nothing links to it,
+    # so deleting it costs nothing and keeps the release readable.
+    foreach ($stale in @($currentAssets | Where-Object { $_ -ne $null -and $_.name -eq "$assetName.new" })) {
+        Write-Warn "removing leftover temp asset $($stale.name) (id $($stale.id))"
+        Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/assets/$($stale.id)" -Headers $headers -Method Delete | Out-Null
     }
+
+    $replaceId = $null
+
+    if ($existingAsset) {
+        # GRTubeYou: compare CONTENT, not size.
+        #
+        # The assets endpoint carries a `digest` field ("sha256:..."). Hashing four local APKs
+        # costs well under a second and turns this skip into a fact instead of an inference -
+        # two builds a few bytes apart, or a truncated upload, are both caught.
+        #
+        # Size alone was the first version of this check and it was not good enough: same size
+        # is not the same file, and a check that guesses is not a check. Size is kept only as
+        # the fallback for an API that does not send `digest`, and the log says which of the two
+        # decided, so a fallback is never mistaken for proof.
+        $remoteDigest = ''
+        if (($existingAsset.PSObject.Properties.Name -contains 'digest') -and $existingAsset.digest) {
+            $remoteDigest = (([string]$existingAsset.digest) -replace '^sha256:', '').ToLowerInvariant()
+        }
+
+        $localDigest = ''
+        if ($remoteDigest) {
+            $localDigest = (Get-FileHash -Path $apk.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+
+        $identical = if ($localDigest) { $localDigest -eq $remoteDigest }
+                     else { [int64]$existingAsset.size -eq [int64]$apk.Length }
+
+        $how = if ($localDigest) { 'sha256' } else { 'size only - API sent no digest' }
+
+        if ($identical) {
+            # The re-run case, and the common one: the file already on the release is this exact
+            # build. Replacing it would open the window above for no reason at all.
+            Write-Ok "$assetName is already this build (verified by $how), left in place"
+            $assets[$abi] = @{
+                Name = $assetName
+                Url  = "https://github.com/$Owner/$Repo/releases/download/$tag/$assetName"
+            }
+            continue
+        }
+
+        $replaceId = $existingAsset.id
+        Write-Warn "replacing ${assetName}: $([math]::Round($existingAsset.size / 1MB, 1)) MB -> $([math]::Round($apk.Length / 1MB, 1)) MB ($how says they differ)"
+    }
+
+    # The name to POST under. Temp when replacing, final when there is nothing to replace.
+    $uploadName = if ($replaceId) { "$assetName.new" } else { $assetName }
 
     # NOTE: assets are uploaded to uploads.github.com, NOT api.github.com - posting
     # to the api host returns 404. The release object carries the correct host in
     # upload_url as "https://uploads.github.com/.../assets{?name,label}".
     $uploadBase = $release.upload_url -replace '\{.*$', ''
-    $uploadUri = "$uploadBase`?name=$([uri]::EscapeDataString($assetName))"
+    $uploadUri = "$uploadBase`?name=$([uri]::EscapeDataString($uploadName))"
 
     # NOTE: curl is used because Invoke-RestMethod -InFile streams the body with
     # Transfer-Encoding: chunked, which the uploads endpoint does not accept.
@@ -489,7 +555,7 @@ foreach ($abi in $byAbi.Keys) {
         Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue
 
         if ($httpCode -eq '201' -or $httpCode -eq '200') {
-            Write-Host ("    done {0} in {1}s" -f $assetName, $elapsed) -ForegroundColor Green
+            Write-Host ("    done {0} in {1}s" -f $uploadName, $elapsed) -ForegroundColor Green
             break
         }
 
@@ -506,6 +572,28 @@ foreach ($abi in $byAbi.Keys) {
 
     if ($httpCode -ne '201' -and $httpCode -ne '200') {
         Fail "Upload of $assetName failed after $uploadAttempts attempt(s): $reason : $respBody"
+    }
+
+    # GRTubeYou: the swap. The new file is already on the release and the old one is still the
+    # one the manifest resolves to, so nothing has been missing at any point so far. Delete the
+    # old, then rename the new into place - the only gap is these two calls.
+    if ($replaceId) {
+        $newIdMatch = [regex]::Match($respBody, '"id"\s*:\s*(\d+)')
+        if (-not $newIdMatch.Success) {
+            # The upload succeeded but the response did not name the asset, so there is nothing
+            # to rename. Say exactly that rather than deleting the old file and hoping.
+            Fail "$assetName uploaded as $uploadName but the response did not carry an asset id, so it cannot be renamed. The old file is still in place; delete '$uploadName' from the release by hand."
+        }
+
+        $newId = [int64]$newIdMatch.Groups[1].Value
+
+        Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/assets/$replaceId" -Headers $headers -Method Delete | Out-Null
+
+        $renamePayload = @{ name = $assetName } | ConvertTo-Json
+        Invoke-RestMethod -Uri "$apiBase/repos/$Owner/$Repo/releases/assets/$newId" -Headers $headers -Method Patch `
+            -Body ([System.Text.Encoding]::UTF8.GetBytes($renamePayload)) -ContentType 'application/json; charset=utf-8' | Out-Null
+
+        Write-Ok "swapped $assetName into place"
     }
 
     $assets[$abi] = @{
