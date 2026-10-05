@@ -1,10 +1,11 @@
 {
   "package": {
-    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta1/GRTubeYou-32.67-beta1-universal.apk",
-    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta1/GRTubeYou-32.67-beta1-arm64-v8a.apk"],
-    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta1/GRTubeYou-32.67-beta1-armeabi-v7a.apk"],
-    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta1/GRTubeYou-32.67-beta1-x86.apk"]
+    "downloadUrl": "https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta2/GRTubeYou-32.67-beta2-universal.apk",
+    "downloadUrlList_arm64-v8a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta2/GRTubeYou-32.67-beta2-arm64-v8a.apk"],
+    "downloadUrlList_armeabi-v7a": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta2/GRTubeYou-32.67-beta2-armeabi-v7a.apk"],
+    "downloadUrlList_x86": ["https://github.com/rafaelisraelyan/GRTubeYou/releases/download/v32.67-beta2/GRTubeYou-32.67-beta2-x86.apk"]
   },
+  "32.67 beta2": {"versionCode": 2504, "changelog": ["Плеер: оверлей перестал будить систему каждые три секунды на паузе - правка из beta1, здесь с правильным номером версии", "Плеер: оверлей на паузе остаётся на экране, а не прячется сам", "Логи: убрана болтовня о таймерах, из-за которой баг репорт был нечитаемым"]},
   "32.67 beta1": {"versionCode": 2503, "changelog": ["Плеер: оверлей перестал будить систему каждые три секунды, пока видео на паузе - раньше это продолжалось всё время паузы", "Плеер: оверлей на паузе остаётся на экране, а не прячется сам", "Логи: убрана пустая болтовня о таймерах, из-за которой баг репорт был нечитаемым", "Логи: таймер выключения экрана больше не подписывается как таймер оверлея - это разные вещи"]},
   "32.67 beta18": {"versionCode": 2501, "changelog": ["Изменений нет: сборка тем же кодом, что beta17 (релиз для проверки публикатора)", "Плеер: прежнее окно видеоформата по кнопке качества остаётся, как в beta17"]},
   "32.67 beta17": {"versionCode": 2500, "changelog": ["Плеер: кнопка качества открывает готовое окно «Видеоформат» с радиокнопками и отметкой выбранного", "Плеер: в окне качества больше нет постороннего пункта «Auto Frame Rate» - он в настройках"]},
