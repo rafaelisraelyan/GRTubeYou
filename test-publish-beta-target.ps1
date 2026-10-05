@@ -327,6 +327,70 @@ if (-not $seriesPattern.Success) {
         ("pattern is: {0}" -f $probe)
 }
 
+# --- 8b. the divergence warning must actually be able to print ----------------
+#
+# Found by running the publish, not by reading it. This branch only runs when build.gradle and
+# GitHub disagree, so on every publish before 05.10 it never executed - and it contained a format
+# string with two placeholders and one argument. The first publish that reached it died two seconds
+# in, printing half the warning:
+#
+#   NOTE: build.gradle says '32.67 beta3', which implies beta4. Publishing beta19 instead,
+#   Error formatting a string: Index (zero based) must be greater than or equal to zero...
+#
+# Nothing was published, so the cost was small. The shape is the point: the code that only runs in
+# the interesting case is the code nobody runs until the interesting case arrives, and a parse check
+# cannot see it because "-f $x" parses perfectly well with too few arguments.
+
+$warnBlock = [regex]::Match($src, '(?s)\$gradleBeta = .*?\n\}')
+
+if (-not $warnBlock.Success) {
+    Assert-Case 'theDivergenceWarningIsFound' $false 'could not find the build.gradle divergence warning'
+} else {
+    Assert-Case 'theDivergenceWarningIsFound' $true `
+        ("block found, {0} line(s)" -f (($warnBlock.Value -split "`n").Count))
+
+    # count placeholders against arguments, per format string in the block
+    $fmtStrings = [regex]::Matches($warnBlock.Value, '(?s)"(?<fmt>[^"]*\{\d+\}[^"]*)"\s*-f\s*(?<args>[^\r\n]*(?:\r?\n\s+[^\r\n]*?)?)\)')
+    $badFormats = @()
+
+    foreach ($f in $fmtStrings) {
+        $placeholders = @([regex]::Matches($f.Groups['fmt'].Value, '\{\d+\}'))
+        # an argument list is a comma-separated run of $name / (expr) items
+        $argText = $f.Groups['args'].Value
+        $argCount = @([regex]::Matches($argText, '\$[A-Za-z_][A-Za-z0-9_]*')).Count
+
+        if ($placeholders.Count -gt $argCount) {
+            $badFormats += ("'{0}' has {1} placeholder(s) and {2} argument(s)" -f `
+                            $f.Groups['fmt'].Value.Trim(), $placeholders.Count, $argCount)
+        }
+    }
+
+    Assert-Case 'everyFormatStringHasEnoughArguments' ($badFormats.Count -eq 0) `
+        ($(if ($badFormats.Count) { ($badFormats -join ' | ') } else { "all $($fmtStrings.Count) format string(s) balanced" }))
+
+    # and the warning must actually run, with a real divergence, and not throw
+    # NOTE the two replacements, and why the first version of this failed.
+    #
+    # The block reads $nameMatch.Groups[1].Value - the versionName that was matched out of
+    # build.gradle. A first attempt replaced that expression with a literal string and left
+    # `$nameMatch = [regex]::Match('x')` in the harness, which then died on "Cannot find an
+    # overload for Match and the argument count: 1" - one argument, where the static call needs two.
+    # A fake Match that does not work is worse than no fake: the failure lands somewhere unrelated to
+    # the thing under test. So the group value is replaced instead, and the fake is a plain string.
+    $probe = $warnBlock.Value -replace '\$nameMatch\.Groups\[1\]\.Value', "`$fakeVersionName"
+    $probe = "function Write-Host { param([string]`$m) `$script:say += `$m }`n" + `
+             "`$script:say = ''`n" + "`$fakeVersionName = '32.67 beta3'`n" + `
+             "`$TargetBetaNumber = 19`n" + $probe + "`n" + "`$script:say"
+
+    $said = ''
+    $threw = $false
+    try { $said = & ([scriptblock]::Create($probe)) } catch { $threw = $true; $said = $_.Exception.Message }
+
+    Assert-Case 'theDivergenceWarningRuns' ((-not $threw) -and ($said -match 'beta4') -and ($said -match 'beta19')) `
+        ("build.gradle says beta3 (implies beta4), publishing beta19. It printed: {0}{1}" -f `
+         $(if ($threw) { "THREW - " } else { "" }), ($said -replace "`n", ' / '))
+}
+
 # --- 9. the beta NUMBER must come from GitHub, not from build.gradle ---------
 #
 # The pre-fix wrapper printed "the next free number in this series is betaN" and then discarded

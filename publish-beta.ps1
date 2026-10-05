@@ -212,6 +212,16 @@ Write-Host ""
 # And say the number build.gradle would have produced, so a divergence is visible rather than
 # silently corrected. This is the whole defect in one line of output: two sources of truth, one
 # trusted, one ignored, and nothing said about the gap.
+# NOTE: this branch is why the format arguments below are counted by the test rather than by eye.
+#
+# It prints only when build.gradle and GitHub DISAGREE - so on every publish before 05.10 it never
+# ran, and a format string with two placeholders and one argument sat there unexecuted. The run that
+# finally reached it died two seconds in with "Error formatting a string: Index (zero based) must be
+# greater than or equal to zero and less than the size of the arguments", after printing half the
+# warning.
+#
+# Nothing was published, so the cost was small, but the shape is the familiar one: the code that only
+# runs in the interesting case is the code nobody runs until the interesting case arrives.
 $gradleBeta = [regex]::Match($nameMatch.Groups[1].Value, '[- ]beta\.?(\d+)$')
 if ($gradleBeta.Success) {
     $implied = [int]$gradleBeta.Groups[1].Value + 1
@@ -219,8 +229,8 @@ if ($gradleBeta.Success) {
     if ($implied -ne $TargetBetaNumber) {
         Write-Host ("  NOTE: build.gradle says '{0}', which implies beta{1}. Publishing beta{2} instead," -f `
                 $nameMatch.Groups[1].Value, $implied, $TargetBetaNumber) -ForegroundColor Yellow
-        Write-Host ("        because beta{0} already exists on GitHub. beta{1} would overwrite it." -f `
-                $implied) -ForegroundColor Yellow
+        Write-Host ("        because beta{0} already exists on GitHub - beta{1} would overwrite it." -f `
+                $implied, $implied) -ForegroundColor Yellow
     }
 }
 
