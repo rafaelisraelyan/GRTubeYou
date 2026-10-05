@@ -93,7 +93,38 @@ Write-Host "pre-flight: listing existing releases"
 # #17 and #18 - and at --limit 40 they are pushed out entirely on a busy repo. A pre-flight that
 # asks "which betas exist in this series" and silently misses the two that matter is worse than
 # no pre-flight: it looks like it ran.
-$existingBetaTags = @(gh release list --limit 200 --json tagName,publishedAt --repo rafaelisraelyan/GRTubeYou 2>$null | ConvertFrom-Json)
+# GRTubeYou 05.10.2026: THE DOUBLE PARENTHESES ARE LOAD-BEARING.
+#
+# Written as @(gh ... | ConvertFrom-Json), and in Windows PowerShell 5.1 that does NOT give a list of
+# releases. It gives a list of ONE release, whose .tagName is every tag joined into one string.
+# Measured on the live channel, 42 releases:
+#
+#     @(gh ... | ConvertFrom-Json)   ->  .Count = 1,  type of [0] = Object[]
+#     @((gh ... | ConvertFrom-Json)) ->  .Count = 42
+#
+# ConvertFrom-Json hands back the array as one object, and @() wraps whatever came out of the
+# pipeline rather than unwrapping an array that arrived intact inside it. The second pair of
+# parentheses evaluates the pipeline first, so the array is expanded when it is collected.
+#
+# WHY IT MATTERED, and it is not cosmetic. The line below filters by regex:
+#
+#     $sameSeries = @($existingBetaTags | Where-Object { $_.tagName -match "^v32\.67-beta\d+$" })
+#
+# With one joined element, $_.tagName is the string "v32.68 v32.67-beta18 v32.67-beta17 ...", and
+# PowerShell's -match on an ARRAY returns the matching elements rather than a boolean. The joined
+# string then matched, the filter kept the one element it was given, and sameSeries.Count came out
+# as 1 - not 16. It never raised an error and never looked wrong.
+#
+# Then the numbers came out of that same array:
+#
+#     existing beta numbers: 0, 0, 0, ... 1, 2, 3, 3, 4, 4, ..., 16, 16, 17, 18
+#
+# Zeros for v32.68 and v32.66, which have no beta in the name at all - [int]('') on a non-matching
+# regex gives 0 - and each real beta twice. It still ended at 18 and still produced beta19, which is
+# why it went unnoticed: the right answer for the wrong reason, from data that had never been
+# filtered. Any series with a higher beta than this one would have had its number used instead, and
+# a real difference would have shown up as a wrong number with nothing saying so.
+$existingBetaTags = @((gh release list --limit 200 --json tagName,publishedAt --repo rafaelisraelyan/GRTubeYou 2>$null | ConvertFrom-Json))
 
 if ($LASTEXITCODE -ne 0 -or -not $existingBetaTags) {
     throw ("could not list existing releases (gh exit $LASTEXITCODE). Refusing to publish: whether the " +
@@ -104,16 +135,94 @@ if ($LASTEXITCODE -ne 0 -or -not $existingBetaTags) {
 $allTagNames = @($existingBetaTags | ForEach-Object { $_.tagName })
 $sameSeries = @($existingBetaTags | Where-Object { $_.tagName -match "^v$([regex]::Escape($BetaBaseVersion))-beta\d+$" })
 $seriesNames = @($sameSeries | ForEach-Object { $_.tagName })
-$betaNumbers = @($seriesNames | ForEach-Object { [int]([regex]::Match($_, 'beta(\d+)$').Groups[1].Value) } | Sort-Object)
+
+# GRTubeYou 05.10.2026: no check that the regex matched, and the reason is the filter above.
+#
+# [int]('') is 0, so an unmatched regex contributes a zero to $betaNumbers rather than nothing - and
+# a zero here is a lie about the channel, printed in a line the operator is reading to decide
+# something. That is how v32.68 and v32.66 showed up in "existing beta numbers" as 0.
+#
+# A `if ($m.Success)` guard was written here first and then removed, because $seriesNames can only
+# contain tags the filter above accepted, and that filter requires "beta\d+$" at the end of the
+# name. The same regex below therefore always matches, and a guard against a case that cannot
+# happen is code that reads as protection while being untested: removing it changed no test result,
+# which is the tests correctly reporting that there was nothing behind it.
+#
+# THE INVARIANT IS NOT FREE, it is just held one line up. Weaken the filter to "beta.*$" and a tag
+# like v32.67-betaX now reaches this cast and contributes 0. test-publish-beta-target.ps1 runs that
+# case against the real patterns from this file.
+#
+# NOTE: no -Unique. Removing it was tried as a mutation and the tests did not notice, which is the
+# tests being right: tag names are unique by construction (v32.67-beta4 is one tag), so the numbers
+# cannot repeat, and -Unique only changed how the printed list looked.
+$betaNumbers = @($seriesNames |
+    ForEach-Object { [int]([regex]::Match($_, 'beta(\d+)$').Groups[1].Value) } |
+    Sort-Object)
 
 Write-Host ("pre-flight: {0} releases on GitHub; this series ({1} beta) already has {2}" -f `
         $allTagNames.Count, $BetaBaseVersion, $(if ($sameSeries.Count) { $seriesNames.Count } else { 'none' }))
 if ($betaNumbers.Count -gt 0) {
     Write-Host ("           existing beta numbers: {0}" -f ($betaNumbers -join ', '))
-    Write-Host ("           highest is beta{0} - the next free number in this series is beta{1}" -f `
-            $betaNumbers[-1], ($betaNumbers[-1] + 1))
 }
+
+# GRTubeYou 05.10.2026: THE NUMBER COMES FROM GITHUB, NOT FROM build.gradle.
+#
+# This line prints "the next free number is betaN" and then THROWS THE ANSWER AWAY, letting
+# publish.ps1 derive the number from build.gradle's own beta suffix instead. Measured on the state
+# this was written against, and the two disagreed:
+#
+#     build.gradle holds        32.67 beta3   (2505)
+#     build.gradle says next    32.67 beta4   (2506)
+#     GitHub says next free     32.67 beta19
+#
+# v32.67-beta4 is a REAL release from 02.10 with its own four APKs. So the run would have aimed at
+# an occupied tag, built four APKs for two minutes, uploaded them over the top of beta4's assets,
+# and reported success. publish.ps1 would have stopped it - the hard Fail on an existing release is
+# why that was a two-minute waste and not a third destroyed release - but the waste is the whole
+# point of the pre-flight, and the number was already sitting in $betaNumbers.
+#
+# WHY THE DIVERGENCE EXISTS, because it is the actual lesson. Deriving the beta number from
+# build.gradle is only correct while build.gradle holds the HIGHEST number ever published in the
+# series. Deleting v32.67-beta1 and beta2 on 05.10 broke that: the counter restarted at 1, so
+# beta3/beta4 came out BELOW the beta5..beta18 published on 02.10-05.10, and "the last one I wrote"
+# stopped meaning "the last one that exists". Nothing about deleting a release says so in
+# build.gradle, which is why this has to be read from the one place that is authoritative.
+#
+# So: highest existing + 1, and if that tag is somehow present anyway, stop rather than pick again.
+$TargetBetaNumber = 0
+
+if ($betaNumbers.Count -gt 0) {
+    $TargetBetaNumber = $betaNumbers[-1] + 1
+    $targetTag = "v$($BetaBaseVersion -replace '\s+','-')-beta$TargetBetaNumber"
+
+    if ($allTagNames -contains $targetTag) {
+        throw ("computed target $targetTag is already in the release list, so 'highest + 1' is " +
+               "wrong here - not something to publish over. Stopping; work out the number by hand.")
+    }
+
+    Write-Host ("           highest is beta{0} - publishing beta{1} ({2})" -f `
+            $betaNumbers[-1], $TargetBetaNumber, $targetTag) -ForegroundColor Green
+} else {
+    Write-Host ("           no betas in this series yet - publishing beta1") -ForegroundColor Green
+    $TargetBetaNumber = 1
+}
+
 Write-Host ""
+
+# And say the number build.gradle would have produced, so a divergence is visible rather than
+# silently corrected. This is the whole defect in one line of output: two sources of truth, one
+# trusted, one ignored, and nothing said about the gap.
+$gradleBeta = [regex]::Match($nameMatch.Groups[1].Value, '[- ]beta\.?(\d+)$')
+if ($gradleBeta.Success) {
+    $implied = [int]$gradleBeta.Groups[1].Value + 1
+
+    if ($implied -ne $TargetBetaNumber) {
+        Write-Host ("  NOTE: build.gradle says '{0}', which implies beta{1}. Publishing beta{2} instead," -f `
+                $nameMatch.Groups[1].Value, $implied, $TargetBetaNumber) -ForegroundColor Yellow
+        Write-Host ("        because beta{0} already exists on GitHub. beta{1} would overwrite it." -f `
+                $implied) -ForegroundColor Yellow
+    }
+}
 
 #
 # The manifest push and the delivery check are NOT here any more. They used to be, and they
@@ -145,6 +254,27 @@ Write-Host ""
 # generated form is a safety net and not the normal path. It is deliberately not attempted
 # here rather than half-translated.
 
+# GRTubeYou 05.10.2026, beta4 (и на самом деле beta19): плеер перестаёт бесконечно
+# «чинить» ролик, который не грузится, и говорит почему.
+#
+# Жалоба (лог grtubeyou-log): сети нет совсем, и ролик перечитывается каждые ~6 секунд
+# минутами подряд. Падения нет и исключения нет - стектрейса искать не по чему, на экране
+# ничего нет. Зритель видит экран, который выглядит зависшим, и никакой причины.
+#
+# Теперь три попытки, потом сообщение. Три - потому что это три разных рычага: первая
+# перечитывает видео, вторая меняет внутренний клиент, третья меняет сетевой стек. Четвёртой
+# тянуть нечего, а большее число купило бы только более долгое ожидание признания поражения.
+#
+# Счётчик общий для обеих причин (зависание и непрочитанный формат) и обнуляется на каждом
+# ролике: обрыв сети на одном видео не должен съедать запас следующего.
+#
+# ВНИМАНИЕ, ЧТО ДЕЛАЕТ ЭТОТ ВЫПУСК НЕОДНОЗНАЧНЫМ ПО ИМЕНИ. Номер беты теперь берётся из
+# списка релизов на GitHub, а не из build.gradle: удалённые 02.10 beta1 и beta2 оставили
+# в build.gradle «beta3», и вывод «+1» нацелился бы на v32.67-beta4 - реальный релиз от 02.10.
+# Поэтому следующий релиз - beta19, а не beta4. Пропуск в нумерации виден и он настоящий.
+#
+# --- предыдущие выпуски ---
+#
 # GRTubeYou 05.10.2026, beta3: обновление больше не зависит от того, чей кэш ответит первым.
 #
 # Жалоба: стоял 32.68 (2502), тумблер беты включён, бет-канал отдаёт 2504 - и обновление
@@ -176,8 +306,9 @@ Write-Host ""
 # НОВОЙ ЛОГИКИ НЕ ПОТРЕБОВАЛОСЬ: AppVersionChecker и так обходит массив URL и берёт первый,
 # который распарсился, поэтому 404 на пробе переводит его на постоянный манифест сам.
 $changelog = @(
-    'Обновление: приложение больше не попадает на устаревшую копию манифеста и потому не пропускает вышедшую бету',
-    'Обновление: проверка спрашивает манифест следующей версии по новому адресу - кэш больше не может её скрыть'
+    'Исправлено: видео, которое не грузится, больше не перечитывается каждые 6 секунд бесконечно - после трёх попыток приложение говорит, что не смогло загрузить ролик',
+    'Исправлено: причина, по которой загрузка не удалась, теперь называется прямо, а не остаётся в логе',
+    'Примечание: этот выпуск помечен beta19, а не beta4 - в серии был пропуск из-за удалённых релизов от 02.10, и номер выбирается по тому, что реально опубликовано'
 )
 
 if ($changelog.Count -eq 0) {
@@ -200,9 +331,11 @@ if ($PrebuiltDir) {
     # leave exactly those devices comparing equal forever and never being offered the update -
     # a dead end with no error anywhere. A gap in the sequence is invisible to everyone; a
     # duplicated code is not.
-    & (Join-Path $PSScriptRoot 'publish.ps1') -Beta -VersionName $BetaBaseVersion -VersionCode $VersionCode -ChangeLog $changelog
+    & (Join-Path $PSScriptRoot 'publish.ps1') -Beta -BetaNumber $TargetBetaNumber `
+        -VersionName $BetaBaseVersion -VersionCode $VersionCode -ChangeLog $changelog
 } else {
-    & (Join-Path $PSScriptRoot 'publish.ps1') -Beta -VersionName $BetaBaseVersion -ChangeLog $changelog
+    & (Join-Path $PSScriptRoot 'publish.ps1') -Beta -BetaNumber $TargetBetaNumber `
+        -VersionName $BetaBaseVersion -ChangeLog $changelog
 }
 
 if ($LASTEXITCODE -ne 0) { throw "publish failed with $LASTEXITCODE" }
