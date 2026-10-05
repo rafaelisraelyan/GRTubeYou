@@ -745,6 +745,77 @@ try { $null = $manifest | ConvertFrom-Json } catch { Fail "Generated version.jso
 [System.IO.File]::WriteAllText($manifestPath, $manifest)
 Write-Ok $manifestPath
 
+# ------------------------------------------------- 7b. the same manifest under its version
+#
+# GRTubeYou: a second copy, named after the versionCode, so the app has a URL it has never asked
+# for. Measured reason - against raw.githubusercontent.com:
+#
+#     no request headers          X-Cache: HIT
+#     Cache-Control: no-cache    X-Cache: HIT
+#     Cache-Control: no-store    X-Cache: HIT
+#     Pragma: no-cache           X-Cache: HIT
+#     a path never requested     X-Cache: MISS
+#
+# So the ?t=<millis> cache buster the app already sends does NOT revalidate that CDN, and a viewer
+# on 2502 was told "up to date" while the beta channel served 2504 - the device received a manifest
+# whose newest entry was 2501. Requesting an identical document from a path that is new works,
+# which is the only thing measured to work.
+#
+# The content is byte-identical, including the full history, so the app can build the same
+# changelog. The app asks for this name first (installed code + 1) and falls back to the standing
+# file when it is absent, which costs one request and needs no new logic: the checker already
+# walks its URL array and takes the first that parses.
+#
+# This is an ADDITIONAL file. The standing name keeps being written, because a build predating
+# this one knows nothing about versioned manifests and must keep working.
+$versionedManifestName = if ($Beta) { "version-beta-$VersionCode.json" } else { "version-$VersionCode.json" }
+$versionedManifestPath = Join-Path $DistPath $versionedManifestName
+[System.IO.File]::WriteAllText($versionedManifestPath, $manifest)
+Write-Ok $versionedManifestPath
+
+# ------------------------------------------------- 7c. a window, because codes skip
+#
+# GRTubeYou: the probe asks for installed+1. That is only the right target when the next release
+# is exactly one code above what the viewer has - and it often is not. This device is on 2502; the
+# next beta is 2505. A probe for 2503 would 404, the fallback would be the standing manifest, and
+# the bug would survive the fix.
+#
+# So the same document is written under a small window of codes around the release: everything from
+# four below to one above. A viewer up to four releases behind on the same channel finds a path no
+# cache has seen. Deeper than that, or across channels with unrelated numbering, falls back to the
+# standing manifest - no worse than before this existed.
+#
+# The window exists so the APP costs one request. Probing a range from the device would put several
+# requests in front of every viewer who is already up to date.
+$versionedPrefix = if ($Beta) { 'version-beta-' } else { 'version-' }
+$versionedSuffix = '.json'
+$windowBelow = 4
+$windowAbove = 1
+
+for ($offset = -$windowBelow; $offset -le $windowAbove; $offset++) {
+    $code = $VersionCode + $offset
+
+    if ($code -le 0 -or $offset -eq 0) {
+        continue
+    }
+
+    $windowName = "${versionedPrefix}${code}${versionedSuffix}"
+    [System.IO.File]::WriteAllText((Join-Path $DistPath $windowName), $manifest)
+    Write-Ok "  window: $windowName"
+}
+
+# Prune the window, or every release leaves eight more files behind and the branch turns to silt.
+$windowFloor = $VersionCode - $windowBelow
+Get-ChildItem $DistPath -Filter "${versionedPrefix}*${versionedSuffix}" -ErrorAction SilentlyContinue | ForEach-Object {
+    $codeMatch = [regex]::Match($_.Name, '^' + [regex]::Escape($versionedPrefix) + '(\d+)' + [regex]::Escape($versionedSuffix) + '$')
+
+    if ($codeMatch.Success -and [int]$codeMatch.Groups[1].Value -lt $windowFloor) {
+        Write-Host "  pruning stale $windowName (below the window floor $windowFloor)" -ForegroundColor DarkGray
+        & git rm -q --cached $_.Name | Out-Null
+        Remove-Item $_.FullName -Force
+    }
+}
+
 # ------------------------------------------------- 8. put the manifest on the branch
 #
 # GRTubeYou: this used to be a printed instruction and nothing more:
@@ -782,18 +853,22 @@ try {
     $ErrorActionPreference = 'Continue'
 
     try {
+        # GRTubeYou: both manifests are committed together. The versioned one is useless on the
+        # server without the standing one, and the app falls back to the standing one when the
+        # versioned name is absent - so a half-pushed pair must not be a state that can persist.
         & git add $manifestName
+& git add -- 'version-beta-*.json' 'version-*.json'
 
         & git diff --cached --quiet
         $manifestStaged = ($LASTEXITCODE -ne 0)
 
         if ($manifestStaged) {
-            Write-Step "Pushing $manifestName"
+            Write-Step "Pushing $manifestName and $versionedManifestName"
             & git commit -m "${manifestName}: $VersionName to the channel" | Out-Null
             if ($LASTEXITCODE -ne 0) { Fail "git commit of $manifestName failed" }
             & git push | Out-Null
             if ($LASTEXITCODE -ne 0) { Fail "git push of $manifestName failed" }
-            Write-Ok "$manifestName pushed"
+            Write-Ok "$manifestName and $versionedManifestName pushed"
         } else {
             Write-Warn "$manifestName is unchanged - nothing to push (already up to date?)"
         }
